@@ -1,7 +1,7 @@
 name = "JuliaChem"
 uuid = "0a8e60a0-aa30-11e9-2bf2-3fef263b0d75"
 authors = ["davpoolechem <davpoole@iastate.edu>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 BinDeps = "9e28174c-4ba2-5203-b857-d8d62c4213ee"
