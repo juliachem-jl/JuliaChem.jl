@@ -20,6 +20,7 @@ libcxxwrap_julia_jll = "3eaa8342-bff7-56a5-9981-c04077f7cee7"
 libint_jll = "5fdff7f3-485e-5122-bc58-379aa217adcc"
 
 [compat]
+julia = "1.6.6"
 BinDeps = "1.0.2"
 CxxWrap = "0.11.2" 
 Eigen_jll = "3.3.7"
