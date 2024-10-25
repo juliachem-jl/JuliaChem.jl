@@ -60,16 +60,35 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
        
         if scf_options.df_use_adaptive && scf_options.df_exchange_n_blocks == 0
             QQ = maximum(scf_data.gpu_data.device_Q_range_lengths)
-            if QQ >= 3300
-                scf_options.df_exchange_n_blocks = 12
-            elseif QQ >= 3000
-                scf_options.df_exchange_n_blocks = 8
-            elseif QQ >= 2500
-                scf_options.df_exchange_n_blocks = 4
-            elseif QQ > 1750 || scf_options.df_use_K_sym #if df_use_K_sym is true then we are using the symmetric algorithm default to 2 for small systems
-                scf_options.df_exchange_n_blocks = 2
-            end 
+
+            block_size_deterimined = false
+            scf_options.df_exchange_n_blocks = 1
+            while !block_size_deterimined && df_exchange_n_blocks < 16
+                number_of_operations = 2*QQ*n_ooc*(p÷scf_options.df_exchange_n_blocks)^2 
+                # println("number of operations per block = ", number_of_operations)
+                if number_of_operations > Int64(16^10)
+                    scf_options.df_exchange_n_blocks += 1
+                else # don't go over 16^10 operations per block
+                    block_size_deterimined = true
+                end
+            end
+            
+            # if QQ >= 3300
+            #     scf_options.df_exchange_n_blocks = 12
+            # elseif QQ >= 2200
+            #     scf_options.df_exchange_n_blocks = 8
+            # elseif QQ >= 1800
+            #     scf_options.df_exchange_n_blocks = 4
+            # elseif QQ > 1600 || scf_options.df_use_K_sym #if df_use_K_sym is true then we are using the symmetric algorithm default to 2 for small systems
+            #     scf_options.df_exchange_n_blocks = 2
+            # else
+            #     scf_options.df_exchange_n_blocks = 1
+            # end 
         #else use the value set in the input file
+        end
+
+        if scf_options.df_use_K_sym && scf_options.df_exchange_n_blocks < 2
+            scf_options.df_exchange_n_blocks = 2
         end
 
         #clear the memory 
@@ -644,20 +663,23 @@ function calculate_W_screened_GPU(device_id, scf_data::SCFData, num_threads ::In
     W = scf_data.gpu_data.device_exchange_intermediate[device_id] # W intermediate for exchange calculation
 
     non_zero_coefficients = scf_data.gpu_data.device_non_zero_coefficients[device_id]
-    num_streams = min(p, num_threads)
+    num_streams = min(4, num_threads)
     Threads.@sync begin 
-        for pp_start in 1:num_streams
+        for stream_id in 1:num_streams
+            p_per_stream = p÷num_streams
+            pp_start = (stream_id-1)*p_per_stream + 1
+            pp_end = stream_id*p_per_stream
+            if stream_id == num_streams
+                pp_end = p
+            end
             Threads.@spawn begin
                 CUDA.device!(device_id-1)
-                for pp in pp_start:num_streams:p
+                for pp in pp_start:pp_end
                     K = scf_data.screening_data.non_screened_p_indices_count[pp]
                     A_cu = view(B, :, scf_data.screening_data.sparse_p_start_indices[pp]:
                         scf_data.screening_data.sparse_p_start_indices[pp]+K-1)
                     B_cu = view(non_zero_coefficients, :,1:K,pp)
                     C_cu = view(W, :,:,pp)
-                    # println("dimensions of A_cu: ", size(A_cu))
-                    # println("dimensions of B_cu: ", size(B_cu))
-                    # println("dimensions of C_cu: ", size(C_cu))
                     CUBLAS.gemm!('N','T', alpha, A_cu, B_cu, beta, C_cu)
                 end
             end
