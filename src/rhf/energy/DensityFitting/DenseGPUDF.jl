@@ -57,14 +57,14 @@ function df_rhf_fock_build_dense_GPU!(scf_data, jeri_engine_thread_df::Vector{T}
                 CUDA.copyto!(scf_data.gpu_data.device_H, host_H)
             end
             CUDA.synchronize()   
-        
+            jc_timing.non_timing_data[JCTiming_GPUkey(JCTC.GPU_data_size_MB, setup_device_id)] = string(get_gpu_data_size_dense_MB(scf_data, setup_device_id))
+       
         end
 
     
 
         jc_timing.non_timing_data[JCTC.contraction_algorithm] = "dense gpu"
         jc_timing.non_timing_data[JCTC.GPU_num_devices] = string(num_devices)
-        jc_timing.non_timing_data[JCTiming_GPUkey(JCTC.GPU_data_size_MB, 1)] = string(get_gpu_data_size_dense_MB(scf_data))
     end
 
 
@@ -92,23 +92,23 @@ function df_rhf_fock_build_dense_GPU!(scf_data, jeri_engine_thread_df::Vector{T}
                 CUDA.synchronize()
 
                 density_times[device_id] = @elapsed begin 
-                    CUBLAS.gemm!('N', 'T', 1.0, ooc, ooc, 0.0, density)
+                    CUDA.CUBLAS.gemm!('N', 'T', 1.0, ooc, ooc, 0.0, density)
                     CUDA.synchronize()          
                 end
                 V_times[device_id] = @elapsed begin
-                    CUBLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
+                    CUDA.CUBLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
                     CUDA.synchronize()      
                 end    
                 J_times[device_id] = @elapsed begin
-                    CUBLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
+                    CUDA.CUBLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
                     CUDA.synchronize()          
                 end
                 W_times[device_id] = @elapsed begin
-                    CUBLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q* p)))
+                    CUDA.CUBLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q* p)))
                     CUDA.synchronize()  
                 end
                 K_times[device_id] = @elapsed begin
-                    CUBLAS.gemm!('T', 'N', -1.0, reshape(W, (n_ooc * Q, p)), reshape(W, (n_ooc * Q, p)), 1.0, fock)
+                    CUDA.CUBLAS.gemm!('T', 'N', -1.0, reshape(W, (n_ooc * Q, p)), reshape(W, (n_ooc * Q, p)), 1.0, fock)
                     CUDA.synchronize()          
                 end
                 if device_id == 1
@@ -174,22 +174,27 @@ function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_
     device_J_AB_invt = Array{CuArray{Float64}}(undef, num_devices)
     
     #always do J_AB_INV on the first device
-    Threads.@threads for device_id in 1:num_devices
+    for device_id in 1:num_devices
         CUDA.device!(device_id-1)
         device_J_AB_invt[device_id] = CUDA.zeros(Float64, (scf_data.A, scf_data.A))
         CUDA.synchronize()
-     
-
     end
     
+   
     form_J_AB_inv_time = @elapsed begin
+        LAPACK.potrf!('L', two_center_integrals)
+        LAPACK.trtri!('L', 'N', two_center_integrals)
+        #copy to all devices
         CUDA.device!(0)
         CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
         CUDA.synchronize()
-        CUSOLVER.potrf!('L', device_J_AB_invt[1])
-        CUDA.synchronize()
-        CUSOLVER.trtri!('L', 'N',  device_J_AB_invt[1])
-        CUDA.synchronize()
+        # CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
+        # CUDA.synchronize()
+        # CUDA.CUSOLVER.trtri!('L', 'N',  device_J_AB_invt[1])
+        # CUDA.synchronize()
+        #CPU form J_AB_INV
+
+        
     end
     jc_timing.timings[JCTC.form_J_AB_inv_time] = form_J_AB_inv_time
 
@@ -207,7 +212,7 @@ function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_
         
         B_time = @elapsed begin
             
-            CUBLAS.trmm!('L', 'L', 'N', 'N', 1.0, device_J_AB_invt[1], device_three_center_integrals[1], device_B[1])   
+            CUDA.CUBLAS.trmm!('L', 'L', 'N', 'N', 1.0, device_J_AB_invt[1], device_three_center_integrals[1], device_B[1])   
             CUDA.synchronize()
         end
         jc_timing.timings[JCTiming_key(JCTC.three_eri_time, 1)] = three_eri_time
@@ -267,7 +272,7 @@ function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_
                 CUDA.synchronize()
                 CUDA.copyto!(rank_rank_J_AB_invt, view(device_J_AB_invt[device_id], device_aux_indicies, other_device_aux_indicies))
                 CUDA.synchronize()
-                CUBLAS.gemm!('N', 'N', 1.0, rank_rank_J_AB_invt, reshape_three_eri_view, 
+                CUDA.CUBLAS.gemm!('N', 'N', 1.0, rank_rank_J_AB_invt, reshape_three_eri_view, 
                     1.0, device_B[device_id])
                 CUDA.synchronize()  
             end
@@ -304,15 +309,15 @@ function calculate_device_ranges_dense(scf_data, num_devices)
     return indices_per_device, device_Q_range_starts, device_Q_range_ends, device_Q_indices, device_Q_range_lengths, max_device_Q_range_length
 end
 
-function get_gpu_data_size_dense_MB(scf_data::SCFData)
+function get_gpu_data_size_dense_MB(scf_data::SCFData, device_id)
     gpu_data_size_MB = 0.0
 
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_B[1])
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_coulomb_intermediate[1])
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_exchange_intermediate[1])
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_occupied_orbital_coefficients[1])
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_density[1])
-    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_fock[1])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_B[device_id])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_coulomb_intermediate[device_id])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_exchange_intermediate[device_id])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_occupied_orbital_coefficients[device_id])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_density[device_id])
+    gpu_data_size_MB += sizeof(scf_data.gpu_data.device_fock[device_id])
     gpu_data_size_MB += sizeof(scf_data.gpu_data.device_H)
 
     
