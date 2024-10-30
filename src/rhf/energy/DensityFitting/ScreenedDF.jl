@@ -389,14 +389,28 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
         scf_options.df_exchange_n_blocks = default_n_blocks
     end
 
+    K_block_width = 0
+
     if scf_data.μ < 100 #if the # of basis functions is small just do a dense calculation with one block
         K_block_width = scf_data.μ
         scf_options.df_exchange_n_blocks = 1
+        println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $i")
+
     else
         K_block_width = scf_data.μ ÷ scf_options.df_exchange_n_blocks
-        if K_block_width < 64
-            println("WARNING: K_block_width is less than 64, this may not be optimal for performance")
-        end
+
+        for i in 1:scf_options.df_exchange_n_blocks
+            K_block_width = scf_data.μ ÷ i
+            if K_block_width >= 64
+                scf_options.df_exchange_n_blocks = i
+                if K_block_width <= scf_data.μ
+                    K_block_width = scf_data.μ
+                    scf_options.df_exchange_n_blocks = 1
+                end
+                println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $i")
+                break
+            end
+        end    
     end
 
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
