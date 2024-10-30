@@ -394,7 +394,7 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
     if scf_data.μ < 100 #if the # of basis functions is small just do a dense calculation with one block
         K_block_width = scf_data.μ
         scf_options.df_exchange_n_blocks = 1
-        println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $1")
+        println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to 1")
 
     else
         K_block_width = scf_data.μ ÷ scf_options.df_exchange_n_blocks
