@@ -4,13 +4,13 @@
     reorder a matrix that came from an MPI Gather
     # Arguments
     - `array_to_reorder` ::Array{Float64} - the matrix to reorder
-    - `rank_indicies` ::Vector{Vector{Int64}} - the indicies of the matrix that came from each rank
+    - `rank_indicies` ::Array{UnitRange{Int64}} - the indicies of the matrix that came from each rank
     - `set_data_function` ::Function - the function to set the data in the matrix
     - `set_temp_function` ::Function - the function to set the data in the temp array
     - `temp` ::Array{Float64} - the temp array to use in reordering 
 
 """
-function reorder_mpi_gathered_matrix(array_to_reorder ::Array{Float64}, rank_indicies ::Vector{Vector{Int64}}, set_data_function::Function, set_temp_function::Function, temp :: Array{Float64})
+function reorder_mpi_gathered_matrix(array_to_reorder ::Array{Float64}, rank_indicies, set_data_function::Function, set_temp_function::Function, temp :: Array{Float64})
     reordering_axes_length = size(array_to_reorder)[end]
     index_list = zeros(Int64, 0)
     for rank_index in 1:length(rank_indicies)

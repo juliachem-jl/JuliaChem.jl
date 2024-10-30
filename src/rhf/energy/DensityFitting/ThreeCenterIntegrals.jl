@@ -157,7 +157,7 @@ function gather_and_reduce_three_center_integrals(three_center_integrals, load_b
     rank = MPI.Comm_rank(comm)
     number_of_primary_basis_functions = size(three_center_integrals, 1)
     aux_basis_indicies_per_rank = [length(x[2]) for x in load_balance_indicies] # number of basis functions calculated on each 
-    rank_indicies = [x[2] ::Array{Int} for x in load_balance_indicies] #basis function indicies calculated on each 
+    rank_indicies = [x[2] for x in load_balance_indicies] #basis function indicies calculated on each 
     indicies_per_rank = aux_basis_indicies_per_rank.*(number_of_primary_basis_functions^2)
     three_center_integral_buff = MPI.VBuffer(three_center_integrals, indicies_per_rank) # buffer set up with the correct size for each rank
     MPI.Allgatherv!(three_center_integrals[:,:,rank_basis_indicies], three_center_integral_buff, comm) # gather the data from each rank into the buffer

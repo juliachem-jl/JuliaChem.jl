@@ -138,7 +138,7 @@ function calculate_B_multi_rank(scf_data, J_AB_INV, basis_sets, jeri_engine_thre
 
     load = scf_options.load
     scf_options.load = "screened"
-    three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, true)
+    three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, this_rank, n_ranks, true, false)
     scf_options.load = load
     
     pq = size(three_center_integrals, 2)
@@ -382,7 +382,7 @@ function get_triangle_matrix_length(n)::Int
     return n * (n + 1) ÷ 2
 end
 
-function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n_blocks, jc_timing::JCTiming, )
+function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n_blocks, jc_timing::JCTiming)
     n_threads = Threads.nthreads()  
 
     if scf_options.df_exchange_n_blocks == 0
