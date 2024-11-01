@@ -21,9 +21,8 @@ function calculate_three_center_integrals_screened!(rank, n_ranks,
     rank_P = length(rank_basis_indicies) #the total number of indicies given to this rank
     three_center_integrals = zeros(Float64, (rank_P, screened_pq_index_count))
 
-    # Threads.@sync for thread in 1:nthreads
-    for thread in 1:nthreads
-        # Threads.@spawn begin     
+    Threads.@sync for thread in 1:nthreads
+        Threads.@spawn begin     
             thread_index_offset = static_load_thread_index_offset(thread, n_indicies_per_thread)
             n_shells_to_process = static_load_thread_shell_to_process_count(thread, nthreads, rank_number_of_shells, n_indicies_per_thread)
 
@@ -41,7 +40,7 @@ function calculate_three_center_integrals_screened!(rank, n_ranks,
                     end
                 end    
             end
-        # end
+        end
     end
     return three_center_integrals
 end

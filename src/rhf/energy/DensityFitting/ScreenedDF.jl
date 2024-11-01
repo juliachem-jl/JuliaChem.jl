@@ -95,13 +95,15 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
             J_AB_invt = two_center_integrals
         end
         B_time = 0.0
+        three_eri_time = 0.0
         if n_ranks > 1 #todo update this to reduce communication?
-            B_time = @elapsed calculate_B_multi_rank(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+            three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, rank, n_ranks, true, false)
+            B_time = @elapsed calculate_B_multi_rank(scf_data, J_AB_invt, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+
         else
             three_eri_time = @elapsed scf_data.D = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
                 scf_data, rank, n_ranks, true, false)
             B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, J_AB_invt, scf_data.D)    
-            jc_timing.timings[JCTC.three_eri_time] = three_eri_time
         end
         # deallocate unneeded memory
         two_center_integrals = zeros(0)
@@ -125,21 +127,18 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
         jc_timing.timings[JCTC.screening_metadata_time] = s_metadata_time
         jc_timing.timings[JCTC.form_J_AB_inv_time] = j_ab_inv_time
         jc_timing.timings[JCTC.B_time] = B_time
+        jc_timing.timings[JCTC.three_eri_time] = three_eri_time
         jc_timing.non_timing_data[JCTC.contraction_algorithm] = "screened cpu"
     end
     calculate_exchange_screened!(scf_data, scf_options, occupied_orbital_coefficients, jc_timing, iteration)
     calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_timing, iteration)
 end
 
-function calculate_B_multi_rank(scf_data, J_AB_INV, basis_sets, jeri_engine_thread_df, scf_options, jc_timing::JCTiming)
+function calculate_B_multi_rank(scf_data, J_AB_INV, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing::JCTiming)
     comm = MPI.COMM_WORLD
     this_rank = MPI.Comm_rank(comm)
     n_ranks = MPI.Comm_size(comm)
 
-    load = scf_options.load
-    scf_options.load = "screened"
-    three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, this_rank, n_ranks, true, false)
-    scf_options.load = load
     
     pq = size(three_center_integrals, 2)
 
@@ -185,7 +184,6 @@ function calculate_B_multi_rank(scf_data, J_AB_INV, basis_sets, jeri_engine_thre
         end
     end
 
-    jc_timing.timings[JCTC.three_eri_time] = three_eri_time
 
 end
 
@@ -399,18 +397,18 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
     else
         K_block_width = scf_data.μ ÷ scf_options.df_exchange_n_blocks
 
-        for i in 1:scf_options.df_exchange_n_blocks
-            K_block_width = scf_data.μ ÷ i
-            if K_block_width >= 64
-                scf_options.df_exchange_n_blocks = i
-                if K_block_width <= scf_data.μ
-                    K_block_width = scf_data.μ
-                    scf_options.df_exchange_n_blocks = 1
+        if K_block_width < 64
+            for n_blocks in scf_options.df_exchange_n_blocks:-1:1
+                bw = scf_data.μ ÷ n_blocks
+                if bw >= 64
+                    K_block_width = bw
+                    scf_options.df_exchange_n_blocks = n_blocks
+                    break
                 end
-                println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $i")
-                break
             end
-        end    
+     
+            println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $(scf_options.df_exchange_n_blocks)")
+        end
     end
 
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
