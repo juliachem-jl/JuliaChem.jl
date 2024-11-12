@@ -99,7 +99,6 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
         if n_ranks > 1 #todo update this to reduce communication?
             three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, rank, n_ranks, true, false)
             B_time = @elapsed calculate_B_multi_rank(scf_data, J_AB_invt, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
-
         else
             three_eri_time = @elapsed scf_data.D = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
                 scf_data, rank, n_ranks, true, false)
@@ -160,42 +159,59 @@ function calculate_B_multi_rank(scf_data, J_AB_INV, three_center_integrals, basi
     alpha = 1.0
     beta = 0.0
 
+
+    MPI_time = 0.0
+    this_rank_gemm = 0.0
+    other_rank_gemm = 0.0
+    add_time = 0.0
+    println("Calculating B: BLAS num threads: ", BLAS.get_num_threads())
     for recieve_rank in 0:n_ranks-1
         recieve_rank_B_Q_index_range = load_balance_indicies[recieve_rank+1][2]
         recieve_rank_J_AB_INV = J_AB_INV[recieve_rank_B_Q_index_range, three_eri_rank_indicies] #this allocates memory perhaps needs to be done another way
             
         if recieve_rank == this_rank        
-            BLAS.gemm!('N', 'N', 1.0, recieve_rank_J_AB_INV, three_center_integrals, 0.0, scf_data.D)
-            reduce_B_this_rank(scf_data.D, recieve_rank)                
+            this_rank_gemm = @elapsed BLAS.gemm!('N', 'N', 1.0, recieve_rank_J_AB_INV, three_center_integrals, 0.0, scf_data.D)
+            for send_rank in 0:n_ranks-1
+                if send_rank == this_rank
+                    continue
+                end
+                MPI_time += @elapsed reduce_B_this_rank(B_temp_buffer, length(scf_data.D), this_rank, send_rank)     
+                temp_buffer = view(B_temp_buffer, 1:length(scf_data.D))
+                reshaped_temp_buffer = reshape(temp_buffer, (this_rank_Q_length, pq))
+                add_time += @elapsed scf_data.D .+= reshaped_temp_buffer
+            end
         else
             recieve_rank_index_range_length = length(recieve_rank_B_Q_index_range)
             B_buffer_view = view(B_temp_buffer, 1:(recieve_rank_index_range_length*pq))
 
             pointerA = pointer(recieve_rank_J_AB_INV, 1)
             pointerB = pointer(three_center_integrals, 1)
-            pointerC = pointer(B_buffer_view, 1)
+            pointerC = pointer(B_temp_buffer, 1)
             M = recieve_rank_index_range_length
             N = pq
             K = size(recieve_rank_J_AB_INV, 2)
 
-            call_gemm!(Val(false), Val(false), M, N, K, alpha, pointerA, pointerB, beta, pointerC)
-            B_temp = reshape(B_buffer_view, (recieve_rank_index_range_length, pq))
-            reduce_B_other_rank(B_temp, recieve_rank)                
+            other_rank_gemm += @elapsed call_gemm!(Val(false), Val(false), M, N, K, alpha, pointerA, pointerB, beta, pointerC)
+            MPI_time += @elapsed reduce_B_other_rank(B_temp_buffer,recieve_rank_index_range_length*pq, this_rank, recieve_rank)                
         end
     end
 
+    println("reduction time: ", MPI_time)
+    println("this rank gemm time: ", this_rank_gemm)
+    println("other rank gemm time: ", other_rank_gemm)
+    println("add time: ", add_time)
 
 end
 
-function reduce_B_this_rank(B, rank)
+function reduce_B_this_rank(B, length_of_B, rank, other_rank)
+    println("rank: $rank, recieving from rank: $other_rank")
     comm = MPI.COMM_WORLD
     max_value = (2^31 - 1)-1
     top_index = max_value
-    length_of_B = length(B)
     start_index = 1
     while true
         top_index = min(top_index, length_of_B)
-        MPI.Reduce!(view(B, start_index:top_index), MPI.SUM, rank, comm)
+        MPI.Recv!(view(B, start_index:top_index), comm; source=other_rank)
         if top_index == length_of_B
             break
         end
@@ -205,15 +221,15 @@ function reduce_B_this_rank(B, rank)
     end    
 end
 
-function reduce_B_other_rank(B, rank)
+function reduce_B_other_rank(B, length_of_B, rank, other_rank)
+    println("rank: $rank, sending to rank: $other_rank")
     comm = MPI.COMM_WORLD
     max_value = (2^31 - 1) -1
     top_index = max_value
-    length_of_B = length(B)
     start_index = 1
     while true
         top_index = min(top_index, length_of_B)
-        MPI.Reduce!(view(B, start_index:top_index), MPI.SUM, rank, comm)
+        MPI.Send(view(B, start_index:top_index), comm; dest=other_rank)
         if top_index == length_of_B
             break
         end
@@ -254,6 +270,7 @@ function calculate_W_screened(scf_data, occupied_orbital_coefficients)
     linear_indicesB = LinearIndices(scf_data.D)
     linear_indicesW = LinearIndices(scf_data.D_tilde)
 
+   
     Threads.@sync for thread in 1:n_threads
         Threads.@spawn begin
             pp = thread
@@ -319,43 +336,91 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
         copy_screened_density_to_array(scf_data)
     end
 
+    rank_Q = size(scf_data.D_tilde, 1)
+
     sparse_pq_index_map = scf_data.screening_data.sparse_pq_index_map
 
+    blas_threads = BLAS.get_num_threads()
+    println("BLAS threads: ", blas_threads)
     V_time = @elapsed begin 
+        last_blas_add_time = 0.0
         p = scf_data.μ
-        scf_data.coulomb_intermediate .= 0.0
-        for pp in 1:(p-1) #todo use call_gemv to remove view usage?
-            range_start = sparse_pq_index_map[pp, pp]
-            range_end = scf_data.screening_data.sparse_p_start_indices[pp+1] -1
-            BLAS.gemv!('N', 1.0, 
-                view(scf_data.D, :, range_start:range_end), 
-                view(scf_data.density_array,  range_start:range_end),
-                1.0, scf_data.coulomb_intermediate) 
+        # scf_data.coulomb_intermediate .= 0.0
+        BLAS.set_num_threads(1)
+
+        n_threads = min(Threads.nthreads(), p-1)
+        num_p_per_thread = p ÷ n_threads
+
+        vv_time = @elapsed Threads.@threads for tt in 1:n_threads
+            thread_time = @elapsed begin 
+                p_thread_start = (tt - 1) * num_p_per_thread + 1
+                p_thread_end =  tt * num_p_per_thread
+                if tt == n_threads
+                    p_thread_end = p-1
+                end
+                thread_V = view(
+                    view(scf_data.D_tilde, :,:, p_thread_start), 1:rank_Q)
+                thread_V .= 0.0
+                for pp in p_thread_start:p_thread_end
+                    range_start = scf_data.screening_data.sparse_p_start_indices[pp]
+                    range_end = scf_data.screening_data.sparse_p_start_indices[pp+1] - 1
+                    BLAS.gemv!('N', 1.0, 
+                        view(scf_data.D, :, range_start:range_end), 
+                        view(scf_data.density_array, range_start:range_end),
+                        1.0, thread_V) 
+                end
+                if tt == 1
+                    last_blas_add_time = @elapsed begin
+                        BLAS.gemv!('N', 1.0, 
+                        view(scf_data.D, :, size(scf_data.D, 2)),
+                        view(scf_data.density_array, scf_data.screening_data.screened_indices_count:scf_data.screening_data.screened_indices_count),
+                        0.0, scf_data.coulomb_intermediate)
+                    end
+                end
+            end
         end
-        BLAS.gemv!('N', 1.0, 
-         view(scf_data.D, :, size(scf_data.D, 2)),
-         view(scf_data.density_array, scf_data.screening_data.screened_indices_count:scf_data.screening_data.screened_indices_count),
-          1.0, scf_data.coulomb_intermediate)
+
+        v_add_time = @elapsed begin 
+            for t in 1:n_threads
+                p_thread_start = (t - 1) * num_p_per_thread + 1
+
+                axpy!(1.0, 
+                view(view(scf_data.D_tilde, :,:, p_thread_start), 1:rank_Q),
+                scf_data.coulomb_intermediate)
+            end 
+        end
+
+        println("vv time: ", vv_time)
+        println("v add time: ", v_add_time)
+        println("last blas add time: ", last_blas_add_time)
+
     end
+
 
     J_time = @elapsed begin
         # do symm J 
         scf_data.J .= 0.0
-        for pp in 1:(p-1) #todo use call_gemv to remove view usage?
+        Threads.@threads for pp in 1:(p-1) #todo use call_gemv to remove view usage?
             range_start = sparse_pq_index_map[pp, pp]
             range_end = scf_data.screening_data.sparse_p_start_indices[pp+1]-1
             BLAS.gemv!('T', 2.0,
                 view(scf_data.D, :, range_start:range_end),
                 scf_data.coulomb_intermediate,
                 1.0, view(scf_data.J, range_start:range_end))
+            if pp == 1
+                range_start = scf_data.screening_data.screened_indices_count
+                range_end = scf_data.screening_data.screened_indices_count
+                BLAS.gemv!('T', 2.0,
+                    view(scf_data.D, :, size(scf_data.D, 2)),
+                    scf_data.coulomb_intermediate,
+                    1.0, view(scf_data.J, range_start:range_end))
+            end
         end
-        BLAS.gemv!('T', 2.0,
-            view(scf_data.D, :, size(scf_data.D, 2)),
-            scf_data.coulomb_intermediate,
-            1.0, view(scf_data.J, scf_data.screening_data.screened_indices_count:scf_data.screening_data.screened_indices_count))
-
         copy_screened_coulomb_to_fock!(scf_data, scf_data.J, scf_data.two_electron_fock)
     end
+   
+    BLAS.set_num_threads(blas_threads)
+    println("BLAS threads: ", blas_threads)
 
     jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
     jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
@@ -397,18 +462,18 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
     else
         K_block_width = scf_data.μ ÷ scf_options.df_exchange_n_blocks
 
-        if K_block_width < 64
-            for n_blocks in scf_options.df_exchange_n_blocks:-1:1
-                bw = scf_data.μ ÷ n_blocks
-                if bw >= 64
-                    K_block_width = bw
-                    scf_options.df_exchange_n_blocks = n_blocks
-                    break
-                end
-            end
+        # if K_block_width < 64
+        #     for n_blocks in scf_options.df_exchange_n_blocks:-1:1
+        #         bw = scf_data.μ ÷ n_blocks
+        #         if bw >= 64
+        #             K_block_width = bw
+        #             scf_options.df_exchange_n_blocks = n_blocks
+        #             break
+        #         end
+        #     end
      
-            println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $(scf_options.df_exchange_n_blocks)")
-        end
+        #     println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $(scf_options.df_exchange_n_blocks)")
+        # end
     end
 
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
@@ -435,7 +500,7 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
     end
 
     #CPU only setup
-    scf_data.k_blocks = zeros(Float64, K_block_width, K_block_width, n_threads)
+    scf_data.k_blocks = zeros(Float64, K_block_width, K_block_width, lower_triangle_length)
 
     total_non_screened_indices = 0
     blocks_to_calculate = Vector{Int}(undef, 0)
@@ -588,10 +653,10 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
     K_linear_indices = LinearIndices(exchange_blocks)
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
 
-    Threads.@sync for thread in 1:n_threads
-        Threads.@spawn begin
-            index = thread
-            while index <= lower_triangle_length
+    Threads.@threads for index in 1:lower_triangle_length
+        # Threads.@spawn begin
+            # index = thread
+            # while index <= lower_triangle_length
                 pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
 
                     p_range = (pp-1)*K_block_width+1:pp*K_block_width
@@ -602,25 +667,25 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
 
                     A_ptr = pointer(W, linear_indices[1, 1, p_start])
                     B_ptr = pointer(W, linear_indices[1, 1, q_start])
-                    C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, thread])
+                    C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, index])
 
 
                     call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
 
-                    scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, thread)
+                    scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, index)
                     if pp != qq
-                        scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, thread)) 
+                        scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, index)) 
                     end
-                lock(dynamic_lock) do
-                    if dynamic_index <= lower_triangle_length
-                        index = dynamic_index
-                        dynamic_index += 1
-                    else
-                        index = lower_triangle_length + 1
-                    end
-                end
-            end
-        end
+                # lock(dynamic_lock) do
+                #     if dynamic_index <= lower_triangle_length
+                #         index = dynamic_index
+                #         dynamic_index += 1
+                #     else
+                #         index = lower_triangle_length + 1
+                #     end
+                # end
+            # end
+        # end
     end#sync
       
     BLAS.set_num_threads(blas_threads)
@@ -644,7 +709,9 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
     C_nonsquare_ptr = pointer(scf_data.k_blocks, 1)
 
 
-    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_nonsquare_ptr, B_nonsquare_ptr, beta, C_nonsquare_ptr)    
+    non_square_gemm_time = @elapsed call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_nonsquare_ptr, B_nonsquare_ptr, beta, C_nonsquare_ptr)    
+
+    println("non square gemm time: ", non_square_gemm_time)
 
     non_square_buffer = reshape(view(scf_data.k_blocks, 1:M*N), (p, length(q_nonsquare_range))) 
 
