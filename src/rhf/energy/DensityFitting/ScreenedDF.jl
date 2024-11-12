@@ -341,16 +341,12 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
     sparse_pq_index_map = scf_data.screening_data.sparse_pq_index_map
 
     blas_threads = BLAS.get_num_threads()
-    println("BLAS threads: ", blas_threads)
     V_time = @elapsed begin 
         last_blas_add_time = 0.0
         p = scf_data.μ
-        # scf_data.coulomb_intermediate .= 0.0
         BLAS.set_num_threads(1)
-
         n_threads = min(Threads.nthreads(), p-1)
         num_p_per_thread = p ÷ n_threads
-
         vv_time = @elapsed Threads.@threads for tt in 1:n_threads
             thread_time = @elapsed begin 
                 p_thread_start = (tt - 1) * num_p_per_thread + 1
@@ -358,18 +354,20 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
                 if tt == n_threads
                     p_thread_end = p-1
                 end
-                thread_V = view(
-                    view(scf_data.D_tilde, :,:, p_thread_start), 1:rank_Q)
-                thread_V .= 0.0
+                thread_V = view(view(scf_data.D_tilde, :,:, p_thread_start), 1:rank_Q)
+                beta = 0.0
                 for pp in p_thread_start:p_thread_end
+                    if pp != p_thread_start
+                        beta = 1.0
+                    end
                     range_start = scf_data.screening_data.sparse_p_start_indices[pp]
                     range_end = scf_data.screening_data.sparse_p_start_indices[pp+1] - 1
                     BLAS.gemv!('N', 1.0, 
                         view(scf_data.D, :, range_start:range_end), 
                         view(scf_data.density_array, range_start:range_end),
-                        1.0, thread_V) 
+                        beta, thread_V) 
                 end
-                if tt == 1
+                if tt == n_threads
                     last_blas_add_time = @elapsed begin
                         BLAS.gemv!('N', 1.0, 
                         view(scf_data.D, :, size(scf_data.D, 2)),
@@ -383,44 +381,36 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
         v_add_time = @elapsed begin 
             for t in 1:n_threads
                 p_thread_start = (t - 1) * num_p_per_thread + 1
-
                 axpy!(1.0, 
                 view(view(scf_data.D_tilde, :,:, p_thread_start), 1:rank_Q),
                 scf_data.coulomb_intermediate)
             end 
         end
-
-        println("vv time: ", vv_time)
-        println("v add time: ", v_add_time)
-        println("last blas add time: ", last_blas_add_time)
-
     end
 
 
     J_time = @elapsed begin
         # do symm J 
-        scf_data.J .= 0.0
         Threads.@threads for pp in 1:(p-1) #todo use call_gemv to remove view usage?
             range_start = sparse_pq_index_map[pp, pp]
             range_end = scf_data.screening_data.sparse_p_start_indices[pp+1]-1
             BLAS.gemv!('T', 2.0,
                 view(scf_data.D, :, range_start:range_end),
                 scf_data.coulomb_intermediate,
-                1.0, view(scf_data.J, range_start:range_end))
-            if pp == 1
+                0.0, view(scf_data.J, range_start:range_end))
+            if pp == p-1
                 range_start = scf_data.screening_data.screened_indices_count
                 range_end = scf_data.screening_data.screened_indices_count
                 BLAS.gemv!('T', 2.0,
                     view(scf_data.D, :, size(scf_data.D, 2)),
                     scf_data.coulomb_intermediate,
-                    1.0, view(scf_data.J, range_start:range_end))
+                    0.0, view(scf_data.J, range_start:range_end))
             end
         end
         copy_screened_coulomb_to_fock!(scf_data, scf_data.J, scf_data.two_electron_fock)
     end
    
     BLAS.set_num_threads(blas_threads)
-    println("BLAS threads: ", blas_threads)
 
     jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
     jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
@@ -711,7 +701,6 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
 
     non_square_gemm_time = @elapsed call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_nonsquare_ptr, B_nonsquare_ptr, beta, C_nonsquare_ptr)    
 
-    println("non square gemm time: ", non_square_gemm_time)
 
     non_square_buffer = reshape(view(scf_data.k_blocks, 1:M*N), (p, length(q_nonsquare_range))) 
 
