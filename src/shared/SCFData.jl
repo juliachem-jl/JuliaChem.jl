@@ -28,6 +28,8 @@ mutable struct SCFData
     J
     K
     k_blocks
+    k_non_square_blocks #buffers for the non-square blocks of K
+    bottom_corner_k_block #buffer for the last non-square blocks of K
     screening_data::ScreeningData
     gpu_data::SCFGPUData
     μ::Int
@@ -40,7 +42,7 @@ end
 function SCFData(gpu_data::SCFGPUData)
     sd = ScreeningData([], [], [], [], [], [], [], falses(1, 1), zeros(Int, 0), Array{Tuple{Int,Int}}(undef, 0),
         Array{Array{UnitRange{Int}}}(undef, 0), Array{Array{UnitRange{Int}}}(undef, 0), 0, 0, 0)
-    return SCFData([], [], [], [], [],[], [], [], [], [], [], sd, gpu_data, 0, 0, 0, 0)
+    return SCFData([], [], [], [], [],[], [], [],[], [], [], [], [], sd, gpu_data, 0, 0, 0, 0)
 end
 
 export SCFData, ScreeningData

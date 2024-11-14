@@ -88,15 +88,20 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
         rank = MPI.Comm_rank(MPI.COMM_WORLD)
         two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
         s_metadata_time = @elapsed get_screening_metadata!(scf_data, scf_options.df_screening_sigma, jeri_engine_thread, two_center_integrals, basis_sets, jc_timing)
-        
         j_ab_inv_time = @elapsed begin 
-            LAPACK.potrf!('L', two_center_integrals)
-            LAPACK.trtri!('L', 'N', two_center_integrals)
+
+            if rank == 0
+                LAPACK.potrf!('L', two_center_integrals)
+                LAPACK.trtri!('L', 'N', two_center_integrals)
+            end
+            MPI.Bcast!(two_center_integrals, 0,MPI.COMM_WORLD)
             J_AB_invt = two_center_integrals
+
         end
+       
         B_time = 0.0
         three_eri_time = 0.0
-        if n_ranks > 1 #todo update this to reduce communication?
+        if n_ranks > 1 
             three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, rank, n_ranks, true, false)
             B_time = @elapsed calculate_B_multi_rank(scf_data, J_AB_invt, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
         else
@@ -123,12 +128,13 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
             jc_timing)
 
         jc_timing.timings[JCTC.two_eri_time] = two_eri_time
-        jc_timing.timings[JCTC.screening_metadata_time] = s_metadata_time
         jc_timing.timings[JCTC.form_J_AB_inv_time] = j_ab_inv_time
+        jc_timing.timings[JCTC.screening_metadata_time] = s_metadata_time
         jc_timing.timings[JCTC.B_time] = B_time
         jc_timing.timings[JCTC.three_eri_time] = three_eri_time
         jc_timing.non_timing_data[JCTC.contraction_algorithm] = "screened cpu"
     end
+
     calculate_exchange_screened!(scf_data, scf_options, occupied_orbital_coefficients, jc_timing, iteration)
     calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_timing, iteration)
 end
@@ -164,7 +170,6 @@ function calculate_B_multi_rank(scf_data, J_AB_INV, three_center_integrals, basi
     this_rank_gemm = 0.0
     other_rank_gemm = 0.0
     add_time = 0.0
-    println("Calculating B: BLAS num threads: ", BLAS.get_num_threads())
     for recieve_rank in 0:n_ranks-1
         recieve_rank_B_Q_index_range = load_balance_indicies[recieve_rank+1][2]
         recieve_rank_J_AB_INV = J_AB_INV[recieve_rank_B_Q_index_range, three_eri_rank_indicies] #this allocates memory perhaps needs to be done another way
@@ -196,15 +201,10 @@ function calculate_B_multi_rank(scf_data, J_AB_INV, three_center_integrals, basi
         end
     end
 
-    println("reduction time: ", MPI_time)
-    println("this rank gemm time: ", this_rank_gemm)
-    println("other rank gemm time: ", other_rank_gemm)
-    println("add time: ", add_time)
 
 end
 
 function reduce_B_this_rank(B, length_of_B, rank, other_rank)
-    println("rank: $rank, recieving from rank: $other_rank")
     comm = MPI.COMM_WORLD
     max_value = (2^31 - 1)-1
     top_index = max_value
@@ -222,7 +222,6 @@ function reduce_B_this_rank(B, length_of_B, rank, other_rank)
 end
 
 function reduce_B_other_rank(B, length_of_B, rank, other_rank)
-    println("rank: $rank, sending to rank: $other_rank")
     comm = MPI.COMM_WORLD
     max_value = (2^31 - 1) -1
     top_index = max_value
@@ -241,11 +240,16 @@ end
 function calculate_exchange_screened!(scf_data, scf_options, occupied_orbital_coefficients, jc_timing::JCTiming, iteration)
     W_time = @elapsed calculate_W_screened(scf_data, occupied_orbital_coefficients)
     
+
+
     K_time = @elapsed begin
-        if scf_options.df_screen_exchange
+        use_sym = haskey(ENV, "DF_FOCK_NO_K_SYMMETRY") && ENV["DF_FOCK_NO_K_SYMMETRY"] == "true" ? false : true
+        if !use_sym
+            calculate_K_small(scf_data)
+        elseif scf_options.df_screen_exchange
             calculate_K_lower_diagonal_block(scf_data, scf_options)
         else
-            calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
+            calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options, jc_timing)
         end
     end
 
@@ -271,34 +275,20 @@ function calculate_W_screened(scf_data, occupied_orbital_coefficients)
     linear_indicesW = LinearIndices(scf_data.D_tilde)
 
    
-    Threads.@sync for thread in 1:n_threads
-        Threads.@spawn begin
-            pp = thread
-            K = 1
-            while pp <= p
-                non_zero_r_index = 1
-                for r in 1:p
-                    if scf_data.screening_data.basis_function_screen_matrix[r, pp]
-                        scf_data.non_zero_coefficients[pp][:, non_zero_r_index] .= view(occupied_orbital_coefficients, :, r)
-                        non_zero_r_index += 1
-                    end
-                end
-                K = scf_data.screening_data.non_screened_p_indices_count[pp]
-                A_ptr = pointer(scf_data.D, linear_indicesB[1, scf_data.screening_data.sparse_p_start_indices[pp]])
-                B_ptr = pointer(scf_data.non_zero_coefficients[pp], 1)
-                C_ptr = pointer(scf_data.D_tilde, linear_indicesW[1, 1, pp])
-                call_gemm!(Val(false), Val(true), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
-
-                lock(dynamic_lock) do
-                    if dynamic_p <= p
-                        pp = dynamic_p
-                        dynamic_p += 1
-                    else
-                        pp = p + 1
-                    end
-                end
+    Threads.@threads for pp in 1:p
+        K = 1
+        non_zero_r_index = 1
+        for r in 1:p
+            if scf_data.screening_data.basis_function_screen_matrix[r, pp]
+                scf_data.non_zero_coefficients[pp][:, non_zero_r_index] .= view(occupied_orbital_coefficients, :, r)
+                non_zero_r_index += 1
             end
         end
+        K = scf_data.screening_data.non_screened_p_indices_count[pp]
+        A_ptr = pointer(scf_data.D, linear_indicesB[1, scf_data.screening_data.sparse_p_start_indices[pp]])
+        B_ptr = pointer(scf_data.non_zero_coefficients[pp], 1)
+        C_ptr = pointer(scf_data.D_tilde, linear_indicesW[1, 1, pp])
+        call_gemm!(Val(false), Val(true), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
     end
     BLAS.set_num_threads(blas_threads)
 end
@@ -335,6 +325,20 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
         BLAS.gemm!('T', 'N', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, scf_data.density)
         copy_screened_density_to_array(scf_data)
     end
+
+    #if env use no sym J 
+    use_sym = haskey(ENV, "DF_FOCK_NO_J_SYMMETRY") && ENV["DF_FOCK_NO_J_SYMMETRY"] == "true" ? false : true
+    if !use_sym
+        V_time = @elapsed BLAS.gemv!('N', 1.0, scf_data.D, scf_data.density_array, 0.0, scf_data.coulomb_intermediate)
+        J_time = @elapsed BLAS.gemv!('T', 2.0, scf_data.D, scf_data.coulomb_intermediate, 0.0, scf_data.J)
+        copy_J_time = @elapsed copy_screened_coulomb_to_fock!(scf_data, scf_data.J, scf_data.two_electron_fock)
+        jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
+        jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
+        jc_timing.timings[JCTiming_key(JCTC.J_time,iteration)] = J_time
+        jc_timing.timings[JCTiming_key(JCTC.copy_J_time,iteration)] = copy_J_time
+        return 
+    end
+
 
     rank_Q = size(scf_data.D_tilde, 1)
 
@@ -407,11 +411,11 @@ function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_
                     0.0, view(scf_data.J, range_start:range_end))
             end
         end
-        copy_screened_coulomb_to_fock!(scf_data, scf_data.J, scf_data.two_electron_fock)
+       copy_J_time = @elapsed copy_screened_coulomb_to_fock!(scf_data, scf_data.J, scf_data.two_electron_fock)
     end
    
     BLAS.set_num_threads(blas_threads)
-
+    jc_timing.timings[JCTiming_key(JCTC.copy_J_time,iteration)] = copy_J_time
     jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
     jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
     jc_timing.timings[JCTiming_key(JCTC.J_time,iteration)] = J_time
@@ -447,23 +451,8 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
     if scf_data.μ < 100 #if the # of basis functions is small just do a dense calculation with one block
         K_block_width = scf_data.μ
         scf_options.df_exchange_n_blocks = 1
-        println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to 1")
-
     else
         K_block_width = scf_data.μ ÷ scf_options.df_exchange_n_blocks
-
-        # if K_block_width < 64
-        #     for n_blocks in scf_options.df_exchange_n_blocks:-1:1
-        #         bw = scf_data.μ ÷ n_blocks
-        #         if bw >= 64
-        #             K_block_width = bw
-        #             scf_options.df_exchange_n_blocks = n_blocks
-        #             break
-        #         end
-        #     end
-     
-        #     println("WARNING: K_block_width is less than 64, this may not be optimal for performance, K_block_with set to $K_block_width, df_exchange_n_blocks set to $(scf_options.df_exchange_n_blocks)")
-        # end
     end
 
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
@@ -491,6 +480,15 @@ function calculate_exchange_block_screen_matrix(scf_data, scf_options, default_n
 
     #CPU only setup
     scf_data.k_blocks = zeros(Float64, K_block_width, K_block_width, lower_triangle_length)
+
+    # n_non_square_blocks = min(lower_triangle_length % n_threads, scf_data.μ % K_block_width)
+
+    if scf_data.μ % K_block_width != 0
+        non_square_size = scf_data.μ % K_block_width + K_block_width
+        scf_data.k_non_square_blocks = zeros(Float64, non_square_size, K_block_width, K_block_width-1)
+        scf_data.bottom_corner_k_block = zeros(Float64, non_square_size, non_square_size)
+    end
+
 
     total_non_screened_indices = 0
     blocks_to_calculate = Vector{Int}(undef, 0)
@@ -561,23 +559,23 @@ function calculate_K_lower_diagonal_block(scf_data, scf_options)
                 index = scf_data.screening_data.blocks_to_calculate[ii]
                 pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
 
-                    p_range = (pp-1)*K_block_width+1:pp*K_block_width
-                    p_start = (pp - 1) * K_block_width + 1
+                p_range = (pp-1)*K_block_width+1:pp*K_block_width
+                p_start = (pp - 1) * K_block_width + 1
 
-                    q_range = (qq-1)*K_block_width+1:qq*K_block_width
-                    q_start = (qq - 1) * K_block_width + 1
+                q_range = (qq-1)*K_block_width+1:qq*K_block_width
+                q_start = (qq - 1) * K_block_width + 1
 
-                    A_ptr = pointer(W, linear_indices[1, 1, p_start])
-                    B_ptr = pointer(W, linear_indices[1, 1, q_start])
-                    C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, thread])
+                A_ptr = pointer(W, linear_indices[1, 1, p_start])
+                B_ptr = pointer(W, linear_indices[1, 1, q_start])
+                C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, thread])
 
 
-                    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
+                call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
 
-                    scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, thread)
-                    if pp != qq
-                        scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, thread)) 
-                    end
+                scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, thread)
+                if pp != qq
+                    scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, thread)) 
+                end
             end
         end
     end#sync
@@ -591,28 +589,28 @@ function calculate_K_lower_diagonal_block(scf_data, scf_options)
     p_non_square_start = 1
 
     #non square part 
-    q_nonsquare_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
-    q_nonsquare_start = q_nonsquare_range[1]
+    q_non_square_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
+    q_non_square_start = q_non_square_range[1]
     M = p
-    N = length(q_nonsquare_range)
+    N = length(q_non_square_range)
     K = Q * occ
     
 
-    A_nonsquare_ptr = pointer(W, linear_indices[1, 1, p_non_square_start])
-    B_nonsquare_ptr = pointer(W, linear_indices[1, 1, q_nonsquare_start])
-    C_nonsquare_ptr = pointer(scf_data.k_blocks, 1)
+    A_non_square_ptr = pointer(W, linear_indices[1, 1, p_non_square_start])
+    B_non_square_ptr = pointer(W, linear_indices[1, 1, q_non_square_start])
+    C_non_square_ptr = pointer(scf_data.k_blocks, 1)
 
 
-    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_nonsquare_ptr, B_nonsquare_ptr, beta, C_nonsquare_ptr)    
+    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_non_square_ptr, B_non_square_ptr, beta, C_non_square_ptr)    
 
-    non_square_buffer = reshape(view(scf_data.k_blocks, 1:M*N), (p, length(q_nonsquare_range))) 
+    non_square_buffer = reshape(view(scf_data.k_blocks, 1:M*N), (p, length(q_non_square_range))) 
 
-    scf_data.two_electron_fock[p_non_square_range, q_nonsquare_range] .= non_square_buffer
-    scf_data.two_electron_fock[q_nonsquare_range, p_non_square_range] .= transpose(non_square_buffer)
+    scf_data.two_electron_fock[p_non_square_range, q_non_square_range] .= non_square_buffer
+    scf_data.two_electron_fock[q_non_square_range, p_non_square_range] .= transpose(non_square_buffer)
 end
 
 #todo remove this function after paper is published
-function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
+function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options, jc_timing)
 
     W = scf_data.D_tilde
     p = scf_data.μ
@@ -635,77 +633,64 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options)
     
     blas_threads = BLAS.get_num_threads()
     BLAS.set_num_threads(1)
-    dynamic_index = n_threads + 1
-    dynamic_lock = Threads.ReentrantLock()
     
     exchange_blocks = scf_data.k_blocks
-
     K_linear_indices = LinearIndices(exchange_blocks)
+
     lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)
 
-    Threads.@threads for index in 1:lower_triangle_length
-        # Threads.@spawn begin
-            # index = thread
-            # while index <= lower_triangle_length
-                pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
-
-                    p_range = (pp-1)*K_block_width+1:pp*K_block_width
-                    p_start = (pp - 1) * K_block_width + 1
-
-                    q_range = (qq-1)*K_block_width+1:qq*K_block_width
-                    q_start = (qq - 1) * K_block_width + 1
-
-                    A_ptr = pointer(W, linear_indices[1, 1, p_start])
-                    B_ptr = pointer(W, linear_indices[1, 1, q_start])
-                    C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, index])
+    n_non_square_blocks = min(lower_triangle_length % n_threads, p % K_block_width)
+    index_times = zeros(Float64, lower_triangle_length + n_non_square_blocks)
 
 
-                    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
+    k_block_p_limit = K_block_width * scf_options.df_exchange_n_blocks
+    k_block_q_limit = k_block_p_limit
 
-                    scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, index)
-                    if pp != qq
-                        scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, index)) 
-                    end
-                # lock(dynamic_lock) do
-                #     if dynamic_index <= lower_triangle_length
-                #         index = dynamic_index
-                #         dynamic_index += 1
-                #     else
-                #         index = lower_triangle_length + 1
-                #     end
-                # end
-            # end
-        # end
+    Threads.@threads for index in lower_triangle_length:-1:1 
+        pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
+
+        p_start = (pp - 1) * K_block_width + 1
+        p_range = p_start:pp*K_block_width
+        if p_range[end] == k_block_p_limit
+            p_range = p_start:p
+        end
+        
+        q_start = (qq - 1) * K_block_width + 1
+        q_range = q_start:qq*K_block_width
+        if q_range[end] == k_block_q_limit
+            q_range = q_start:p
+        end
+
+        A_ptr = pointer(W, linear_indices[1, 1, p_start])
+        B_ptr = pointer(W, linear_indices[1, 1, q_start])
+
+        if p_range[end] == p && q_range[end] == p && p % K_block_width != 0 #bottom corner block
+            C_ptr = pointer(scf_data.bottom_corner_k_block, 1)
+            call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
+            scf_data.two_electron_fock[p_range, q_range] .= scf_data.bottom_corner_k_block
+            if pp != qq
+                scf_data.two_electron_fock[q_range, p_range] .= transpose(CCC) 
+            end
+        elseif p_range[end] == p || q_range[end] == p && p % K_block_width != 0 #non square block
+            CCC = view(scf_data.k_non_square_blocks, :, :, qq)
+            C_ptr = pointer(CCC, 1)
+            call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
+            scf_data.two_electron_fock[p_range, q_range] .= CCC
+            if pp != qq
+                scf_data.two_electron_fock[q_range, p_range] .= transpose(CCC) 
+            end
+        else #square block (normal)
+            C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, index])
+            call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
+            scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, index)
+            if pp != qq
+                scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, index)) 
+            end
+        end
     end#sync
-      
+
     BLAS.set_num_threads(blas_threads)
-    if p % scf_options.df_exchange_n_blocks == 0 # square blocks cover the entire pq space
-        return
-    end
-    # non square part of K not include in the blocks above if any are non screened put back after full block is working
-    p_non_square_range = 1:p
-    p_non_square_start = 1
-
-    #non square part 
-    q_nonsquare_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
-    q_nonsquare_start = q_nonsquare_range[1]
-    M = p
-    N = length(q_nonsquare_range)
-    K = Q * occ
     
-
-    A_nonsquare_ptr = pointer(W, linear_indices[1, 1, p_non_square_start])
-    B_nonsquare_ptr = pointer(W, linear_indices[1, 1, q_nonsquare_start])
-    C_nonsquare_ptr = pointer(scf_data.k_blocks, 1)
-
-
-    non_square_gemm_time = @elapsed call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_nonsquare_ptr, B_nonsquare_ptr, beta, C_nonsquare_ptr)    
-
-
-    non_square_buffer = reshape(view(scf_data.k_blocks, 1:M*N), (p, length(q_nonsquare_range))) 
-
-    scf_data.two_electron_fock[p_non_square_range, q_nonsquare_range] .= non_square_buffer
-    scf_data.two_electron_fock[q_nonsquare_range, p_non_square_range] .= transpose(non_square_buffer)
 end
 
 
