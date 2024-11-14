@@ -62,6 +62,7 @@ module JCTC
     const K_time = "K_time-"
     const W_time = "W_time-"
     const J_time = "J_time-"
+    const copy_J_time = "copy_J_time-"
     const V_time = "V_time-"
     const screening_time = "screening_time"
     const fock_MPI_time = "fock_MPI_time-"
