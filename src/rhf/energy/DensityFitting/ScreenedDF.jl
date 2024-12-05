@@ -89,25 +89,26 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
         two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
         s_metadata_time = @elapsed get_screening_metadata!(scf_data, scf_options.df_screening_sigma, jeri_engine_thread, two_center_integrals, basis_sets, jc_timing)
         j_ab_inv_time = @elapsed begin 
-
-            if rank == 0
+            if rank == 0 # avoid convergence problems always do this on rank 0
                 LAPACK.potrf!('L', two_center_integrals)
                 LAPACK.trtri!('L', 'N', two_center_integrals)
             end
-            MPI.Bcast!(two_center_integrals, 0,MPI.COMM_WORLD)
+            if n_ranks > 1
+                broadcast_two_center_integrals(two_center_integrals)
+            end
             J_AB_invt = two_center_integrals
-
         end
-       
         B_time = 0.0
         three_eri_time = 0.0
         if n_ranks > 1 
-            three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, scf_data, rank, n_ranks, true, false)
-            B_time = @elapsed calculate_B_multi_rank(scf_data, J_AB_invt, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+
+            calculate_B_multi_rank(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
         else
             three_eri_time = @elapsed scf_data.D = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
                 scf_data, rank, n_ranks, true, false)
             B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, J_AB_invt, scf_data.D)    
+            jc_timing.timings[JCTC.B_time] = B_time
+            jc_timing.timings[JCTC.three_eri_time] = three_eri_time
         end
         # deallocate unneeded memory
         two_center_integrals = zeros(0)
@@ -130,8 +131,7 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
         jc_timing.timings[JCTC.two_eri_time] = two_eri_time
         jc_timing.timings[JCTC.form_J_AB_inv_time] = j_ab_inv_time
         jc_timing.timings[JCTC.screening_metadata_time] = s_metadata_time
-        jc_timing.timings[JCTC.B_time] = B_time
-        jc_timing.timings[JCTC.three_eri_time] = three_eri_time
+
         jc_timing.non_timing_data[JCTC.contraction_algorithm] = "screened cpu"
     end
 
@@ -139,69 +139,46 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
     calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_timing, iteration)
 end
 
-function calculate_B_multi_rank(scf_data, J_AB_INV, three_center_integrals, basis_sets, jeri_engine_thread_df, scf_options, jc_timing::JCTiming)
+function calculate_B_multi_rank(scf_data, J_AB_INV, basis_sets, jeri_engine_thread_df, scf_options, jc_timing::JCTiming)
     comm = MPI.COMM_WORLD
     this_rank = MPI.Comm_rank(comm)
     n_ranks = MPI.Comm_size(comm)
 
     
-    pq = size(three_center_integrals, 2)
+    pq = scf_data.screening_data.screened_indices_count
 
     #divide the B_Q indicies that will go to each rank 
-    #(these are different than the three_eri_rank_indicies indicies which are based on the static or dynamic load balancing)
     load_balance_indicies = [static_load_rank_indicies_3_eri(rank_index, n_ranks, basis_sets) for rank_index in 0:n_ranks-1]
     three_eri_rank_indicies = load_balance_indicies[this_rank+1][2]
     this_rank_B_Q_index_range = load_balance_indicies[this_rank+1][2]
     
     this_rank_Q_length = length(this_rank_B_Q_index_range)
 
-    max_rank_n_aux_indicies = 0
-    for rank_index in 0:n_ranks-1
-        max_rank_n_aux_indicies = max(max_rank_n_aux_indicies, length(load_balance_indicies[rank_index+1][2]))
-    end
-
     scf_data.D = zeros(Float64, (this_rank_Q_length, pq))
-    B_temp_buffer = zeros(Float64, (max_rank_n_aux_indicies*pq)) 
-    alpha = 1.0
-    beta = 0.0
 
+    three_eri_time = 0.0
+    B_time = 0.0
 
-    MPI_time = 0.0
-    this_rank_gemm = 0.0
-    other_rank_gemm = 0.0
-    add_time = 0.0
-    for recieve_rank in 0:n_ranks-1
-        recieve_rank_B_Q_index_range = load_balance_indicies[recieve_rank+1][2]
-        recieve_rank_J_AB_INV = J_AB_INV[recieve_rank_B_Q_index_range, three_eri_rank_indicies] #this allocates memory perhaps needs to be done another way
-            
-        if recieve_rank == this_rank        
-            this_rank_gemm = @elapsed BLAS.gemm!('N', 'N', 1.0, recieve_rank_J_AB_INV, three_center_integrals, 0.0, scf_data.D)
-            for send_rank in 0:n_ranks-1
-                if send_rank == this_rank
-                    continue
-                end
-                MPI_time += @elapsed reduce_B_this_rank(B_temp_buffer, length(scf_data.D), this_rank, send_rank)     
-                temp_buffer = view(B_temp_buffer, 1:length(scf_data.D))
-                reshaped_temp_buffer = reshape(temp_buffer, (this_rank_Q_length, pq))
-                add_time += @elapsed scf_data.D .+= reshaped_temp_buffer
-            end
-        else
-            recieve_rank_index_range_length = length(recieve_rank_B_Q_index_range)
-            B_buffer_view = view(B_temp_buffer, 1:(recieve_rank_index_range_length*pq))
-
-            pointerA = pointer(recieve_rank_J_AB_INV, 1)
-            pointerB = pointer(three_center_integrals, 1)
-            pointerC = pointer(B_temp_buffer, 1)
-            M = recieve_rank_index_range_length
-            N = pq
-            K = size(recieve_rank_J_AB_INV, 2)
-
-            other_rank_gemm += @elapsed call_gemm!(Val(false), Val(false), M, N, K, alpha, pointerA, pointerB, beta, pointerC)
-            MPI_time += @elapsed reduce_B_other_rank(B_temp_buffer,recieve_rank_index_range_length*pq, this_rank, recieve_rank)                
+    this_rank_J_AB_INV = J_AB_INV[this_rank_B_Q_index_range, :]
+    # do B[Q,pq] += J_AB_INV[Q, P] * three_center_integrals[P,pq] where Q is the aux range managed by this_rank and P is the aux range managed by other_rank(s)
+    for other_rank in 0:n_ranks-1
+        three_eri_time += @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, 
+            basis_sets,
+            scf_options,
+            scf_data,
+            other_rank,
+            n_ranks,
+            true, false)
+        
+        B_time += @elapsed begin 
+            other_rank_Q_index_range = load_balance_indicies[other_rank+1][2] #range of indexes managed by rank: other rank 
+            J_AB_INV_ranks_slice = this_rank_J_AB_INV[:, other_rank_Q_index_range] #this allocates memory perhaps needs to be done another way
+            BLAS.gemm!('N', 'N', 1.0, J_AB_INV_ranks_slice, three_center_integrals, 1.0, scf_data.D)
         end
     end
 
-
+    jc_timing.timings[JCTC.B_time] = B_time
+    jc_timing.timings[JCTC.three_eri_time] = three_eri_time
 end
 
 function reduce_B_this_rank(B, length_of_B, rank, other_rank)
@@ -726,3 +703,4 @@ function call_gemm!(transA::Val, transB::Val,
         convtrans(transA), convtrans(transB), M, N, K,
         alpha, A, lda, B, ldb, beta, C, ldc)
 end
+

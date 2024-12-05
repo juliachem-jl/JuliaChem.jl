@@ -133,12 +133,17 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
 
   n_ranks = MPI.Comm_size(MPI.COMM_WORLD)
   rank = MPI.Comm_rank(MPI.COMM_WORLD)
-
+  
   form_J_AB_inv_time = @elapsed begin
-    LinearAlgebra.LAPACK.potrf!('L', two_center_integrals)
-    LinearAlgebra.LAPACK.trtri!('L', 'N', two_center_integrals)
+    if rank == 0 # avoid convergence problems always do this on rank 0
+      LAPACK.potrf!('L', two_center_integrals)
+      LAPACK.trtri!('L', 'N', two_center_integrals)
+    end
+    if n_ranks > 1
+        broadcast_two_center_integrals(two_center_integrals)
+    end
+    J_AB_invt = two_center_integrals
   end
-
   B_time = 0.0
   three_eri_time = 0.0
   three_center_integrals = []

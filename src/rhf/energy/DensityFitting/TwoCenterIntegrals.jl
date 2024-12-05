@@ -96,13 +96,73 @@ end
 end
 
 function gather_and_reduce_two_center_integrals(two_center_integrals, load_balance_indicies, rank_basis_indicies, comm)
+    rank = MPI.Comm_rank(comm)
+
     number_of_aux_basis_funtions = size(two_center_integrals, 1)
     aux_basis_indicies_per_rank = [length(x[2]) for x in load_balance_indicies] # number of basis functions calculated on each 
     rank_indicies = [x[2] for x in load_balance_indicies] #basis function indicies calculated on each 
     indicies_per_rank = aux_basis_indicies_per_rank.*number_of_aux_basis_funtions
-    two_center_integral_buff = MPI.VBuffer(two_center_integrals, indicies_per_rank) # buffer set up with the correct size for each rank
-    MPI.Allgatherv!(two_center_integrals[ :,rank_basis_indicies], two_center_integral_buff, comm) # gather the data from each rank into the buffer
-    reorder_mpi_gathered_matrix(two_center_integrals, rank_indicies, set_data_2D!, set_temp_2D!, zeros(Float64, number_of_aux_basis_funtions))
+    # two_center_integral_buff = MPI.VBuffer(two_center_integrals, indicies_per_rank) # Buffer set up with the correct size for each rank
+    
+
+    MPI.Barrier(comm)
+    gather_two_center_integrals(two_center_integrals, aux_basis_indicies_per_rank, rank_indicies, comm)
+    # MPI.Allgatherv!(two_center_integrals[ :,rank_basis_indicies], two_center_integral_buff, comm) # gather the data from each rank into the Buffer
+    # reorder_mpi_gathered_matrix(two_center_integrals, rank_indicies, set_data_2D!, set_temp_2D!, zeros(Float64, number_of_aux_basis_funtions))
+end
+
+
+function gather_two_center_integrals(two_center_integrals, indicies_per_rank, rank_index_ranges, comm)
+    n_ranks = MPI.Comm_size(comm)
+    this_rank = MPI.Comm_rank(comm)
+    Q = size(two_center_integrals, 1)
+    max_length = (2^31 - 1) -1
+ 
+    if this_rank == 0
+        for send_rank in 1:n_ranks-1
+            send_rank_n_integrals = indicies_per_rank[send_rank+1]*Q
+            if send_rank_n_integrals < max_length
+                send_rank_data = view(two_center_integrals, :, rank_index_ranges[send_rank+1])
+                buff = MPI.Buffer(send_rank_data, send_rank_n_integrals, MPI.Datatype(Float64))
+                MPI.Recv!(buff, comm; source=send_rank, tag=send_rank)
+            else
+                n_inidices_per_chunk = send_rank_n_integrals ÷ max_length
+                for i in 1:n_inidices_per_chunk+1
+                    start_index = (i-1)*max_length + 1
+                    end_index = min(i*max_length, send_rank_n_integrals)
+                    if start_index > send_rank_n_integrals
+                        break
+                    end
+                    rank_data = view(view(two_center_integrals, :, rank_index_ranges[send_rank+1]), start_index:end_index)
+                    n_values = length(rank_data)
+                    buff = MPI.Buffer(rank_data, n_values, MPI.Datatype(Float64))
+                    MPI.Recv!(buff, comm; source=send_rank, tag=send_rank)
+                end
+            end
+        end
+    else 
+        rank_n_integrals = indicies_per_rank[this_rank+1]*Q
+        if rank_n_integrals < max_length
+            rank_data = view(two_center_integrals, :, rank_index_ranges[this_rank+1])
+            buff = MPI.Buffer(rank_data, rank_n_integrals, MPI.Datatype(Float64))
+            MPI.Send(buff, comm; dest=0, tag=this_rank)
+        else
+            n_inidices_per_chunk = rank_n_integrals ÷ max_length
+            for i in 1:n_inidices_per_chunk+1
+
+                start_index = (i-1)*max_length + 1
+                end_index = min(i*max_length, rank_n_integrals)
+                rank_data = view(view(two_center_integrals, :, rank_index_ranges[this_rank+1]), start_index:end_index)
+
+                if start_index > rank_n_integrals
+                    break
+                end
+                n_values = length(rank_data)
+                buff = MPI.Buffer(rank_data, n_values, MPI.Datatype(Float64))
+                MPI.Send(buff,comm; dest=0, tag=this_rank)
+            end
+        end        
+    end
 end
 
 @inline function run_two_center_integrals_worker(two_center_integrals,
@@ -175,4 +235,26 @@ function print_two_center_integrals(two_center_integrals)
         # end
     end
     close(io)
+end
+
+
+
+function broadcast_two_center_integrals(two_center_integrals)
+    #max value of int32 
+    comm = MPI.COMM_WORLD
+    max_length = (2^31 - 1) -1
+    if length(two_center_integrals) < max_length
+        MPI.Bcast!(two_center_integrals, 0, comm)
+        return
+    end
+    #loop over the array and send in chunks of max value of int32
+    number_of_chunks = length(two_center_integrals) ÷ max_length
+    for i in 1:number_of_chunks+1
+        start_index = (i-1)*max_length + 1
+        end_index = min(i*max_length, length(two_center_integrals))
+        if start_index > length(two_center_integrals)
+            break
+        end
+        MPI.Bcast!(two_center_integrals[start_index:end_index], 0, comm)
+    end    
 end
