@@ -175,7 +175,7 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
         three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
           scf_data, other_rank, n_ranks, true, false)
       end
-      BLAS.gemm!('N', 'N', 1.0, two_center_integrals[rank_aux_indicies,other_rank_aux_indicies], three_center_integrals, 1.0, scf_data.D)
+      B_time += @elaspsed BLAS.gemm!('N', 'N', 1.0, two_center_integrals[rank_aux_indicies,other_rank_aux_indicies], three_center_integrals, 1.0, scf_data.D)
     end
 
     #print the first row of the three center integrals
