@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-task=4
 #SBATCH -c 64
-#SBATCH -J test_intermitent_erros
+#SBATCH -J S22_3
 #SBATCH -o /global/homes/j/jhayes1/source/JuliaChem.jl/testoutputs/test_intermitent_dense_code.out
 
 export JULIA_NUM_THREADS=64

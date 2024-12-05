@@ -165,17 +165,18 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
     AA = length(rank_aux_indicies)
 
     scf_data.D = zeros(Float64, (AA, μμ * νν))
+    form_J_AB_inv_time += @elapsed this_rank_two_eri = two_center_integrals[rank_aux_indicies,:]
 
     for other_rank in 0:n_ranks-1
       other_rank_shell_aux_indicies, 
       other_rank_aux_indicies,
       other_rank_basis_index_map = static_load_rank_indicies(other_rank,n_ranks,basis_sets) 
 
-      three_eri_time = @elapsed begin
+      three_eri_time += @elapsed begin
         three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
           scf_data, other_rank, n_ranks, true, false)
       end
-      B_time += @elaspsed BLAS.gemm!('N', 'N', 1.0, two_center_integrals[rank_aux_indicies,other_rank_aux_indicies], three_center_integrals, 1.0, scf_data.D)
+      B_time += @elaspsed BLAS.gemm!('N', 'N', 1.0, this_rank_two_eri[:,other_rank_aux_indicies], three_center_integrals, 1.0, scf_data.D)
     end
 
     #print the first row of the three center integrals
