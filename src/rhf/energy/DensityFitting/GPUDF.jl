@@ -728,6 +728,10 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
         CUDA.synchronize()
         CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
         CUDA.synchronize()
+
+        #copy transpose 
+        CUDA.copyto!(view(fock, q_range, p_range), transpose(exchange_block))
+        CUDA.synchronize()
     end
 
     if p % scf_options.df_exchange_n_blocks != 0 # if square blocks don't cover the entire pq space
@@ -747,6 +751,10 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
         CUDA.synchronize()
 
         CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
+        CUDA.synchronize()
+
+        #copy transpose
+        CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
         CUDA.synchronize()
 
     end 
@@ -791,32 +799,29 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
             CUDA.copyto!(device_three_center_integrals[setup_device_id], three_center_integrals[setup_device_id])
 
             device_B[setup_device_id] = CUDA.zeros(Float64, (device_Q_range_lengths[global_device_id], pq))
-            device_B_send_buffers[setup_device_id] = CUDA.zeros(Float64, (max_device_Q_range_length * pq))
-            host_B_send_buffers[setup_device_id] = zeros(Float64, (max_device_Q_range_length * pq))
+            if num_devices_global > 1 
+                device_B_send_buffers[setup_device_id] = CUDA.zeros(Float64, (max_device_Q_range_length * pq))
+                host_B_send_buffers[setup_device_id] = zeros(Float64, (max_device_Q_range_length * pq))
+            end
             CUDA.synchronize()
         end #spawn
     end
 
-    # if rank == 0
-    #     CUDA.device!(0)
-    #     J_AB_time = @elapsed begin
-    #         CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
-    #         CUDA.synchronize()
-    #         CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
-    #         CUDA.synchronize()
-    #         CUDA.CUSOLVER.trtri!('L', 'N', device_J_AB_invt[1])
-    #         CUDA.synchronize()
-    #     end
+    if rank == 0
+        CUDA.device!(0)
+        J_AB_time = @elapsed begin
+            CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
+            CUDA.synchronize()
+            CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
+            CUDA.synchronize()
+            CUDA.CUSOLVER.trtri!('L', 'N', device_J_AB_invt[1])
+            CUDA.synchronize()
+        end
 
-    #     CUDA.copyto!(two_center_integrals, device_J_AB_invt[1]) # copy back because taking subarrays on the GPU is slow / doesn't work. Need to look into if this is possible with CUDA.jl
+        CUDA.copyto!(two_center_integrals, device_J_AB_invt[1]) # copy back because taking subarrays on the GPU is slow / doesn't work. Need to look into if this is possible with CUDA.jl
         
-    #     jc_timing.timings[JCTC.form_J_AB_inv_time] = J_AB_time
-    # end
-
-    LinearAlgebra.LAPACK.potrf!('L', two_center_integrals)
-    LinearAlgebra.LAPACK.trtri!('L', 'N', two_center_integrals)
-
-
+        jc_timing.timings[JCTC.form_J_AB_inv_time] = J_AB_time
+    end
 
     if MPI.Comm_size(COMM) > 1
         #broadcast two_center_integrals to all ranks
