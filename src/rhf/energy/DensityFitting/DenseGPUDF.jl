@@ -182,23 +182,14 @@ function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_
     
    
     form_J_AB_inv_time = @elapsed begin
-        LAPACK.potrf!('L', two_center_integrals)
-        LAPACK.trtri!('L', 'N', two_center_integrals)
-        #copy to all devices
-        CUDA.device!(0)
         CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
         CUDA.synchronize()
-        # CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
-        # CUDA.synchronize()
-        # CUDA.CUSOLVER.trtri!('L', 'N',  device_J_AB_invt[1])
-        # CUDA.synchronize()
-        #CPU form J_AB_INV
-
-        
+        CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
+        CUDA.synchronize()
+        CUDA.CUSOLVER.trtri!('L', 'N',  device_J_AB_invt[1])
+        CUDA.synchronize()        
     end
     jc_timing.timings[JCTC.form_J_AB_inv_time] = form_J_AB_inv_time
-
-
 
     pq = scf_data.μ^2
     if num_devices == 1
@@ -260,7 +251,8 @@ function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_
               other_device_three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
                 scf_data, other_device_id-1, num_devices, true, false)
             end
-            for device_id in 1:num_devices
+
+            Threads.@threads for device_id in 1:num_devices
                 CUDA.device!(device_id-1)
                 device_aux_indicies = aux_ranges[device_id]
                 three_eri_view = view(device_three_center_integrals[device_id], 1:(device_Q_index_lengths[other_device_id]*pq))
