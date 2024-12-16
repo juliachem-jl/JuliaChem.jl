@@ -19,6 +19,7 @@ mutable struct SCFOptions
     num_devices :: Int64
     df_use_K_sym :: Bool
     df_K_sym_type :: String
+    df_adaptive_basis_limit :: Int64
 end 
 
 function create_default_scf_options()
