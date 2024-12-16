@@ -40,7 +40,8 @@ function create_default_scf_options()
         SCF_Keywords.GPUAlgorithms.df_use_adaptive_default,
         SCF_Keywords.GPUAlgorithms.default_num_devices,
         SCF_Keywords.GPUAlgorithms.df_use_K_sym_default,
-        SCF_Keywords.GPUAlgorithms.df_K_sym_type
+        SCF_Keywords.GPUAlgorithms.df_K_sym_type,
+        SCF_Keywords.GPUAlgorithms.df_adaptive_basis_limit
         )
 end
 
@@ -115,6 +116,9 @@ function create_scf_options(scf_flags)
 
     df_K_sym_type = haskey(scf_flags, GPUAlgorithms.df_K_sym_type) ?
         scf_flags[GPUAlgorithms.df_K_sym_type] : GPUAlgorithms.df_K_sym_type_default
+    
+    df_adaptive_basis_limit = haskey(scf_flags, GPUAlgorithms.df_adaptive_basis_limit) ?
+        scf_flags[GPUAlgorithms.df_adaptive_basis_limit] : GPUAlgorithms.df_adaptive_basis_limit_default
 
     return SCFOptions(
         do_density_fitting,
@@ -134,7 +138,8 @@ function create_scf_options(scf_flags)
         df_use_adaptive,
         df_num_devices,
         df_use_K_sym,
-        df_K_sym_type
+        df_K_sym_type,
+        df_adaptive_basis_limit
         )
 end
 
@@ -169,6 +174,7 @@ function print_scf_options(options::SCFOptions)
             println("DF Use Adaptive: ", options.df_use_adaptive)
             println("DF Use K Symmetry: ", options.df_use_K_sym)
             println("DF K Symmetry Type: ", options.df_K_sym_type)
+            println("DF Adaptive basis limit ", options.df_adaptive_basis_limit)
             println("DF number of GPUs: ", options.num_devices)
         end
         println("--------------------------------")

@@ -80,7 +80,7 @@ function run_gpu_fock_build!(scf_data, jeri_engine_thread_df, jeri_engine_thread
   rank = MPI.Comm_rank(MPI.COMM_WORLD)
   n_ranks = MPI.Comm_size(MPI.COMM_WORLD)
 
-  if df_force_dense || (scf_options.df_use_adaptive && scf_data.μ < 800 && rank == 0 && n_ranks == 1) # used for small systems on runs with a single rank
+  if df_force_dense || (scf_options.df_use_adaptive && scf_data.μ < scf_options.df_adaptive_basis_limit && rank == 0 && n_ranks == 1) # used for small systems on runs with a single rank
     df_rhf_fock_build_dense_GPU!(scf_data, jeri_engine_thread_df, jeri_engine_thread,
       basis_sets, occupied_orbital_coefficients, iteration, scf_options, H, jc_timing)
   else
