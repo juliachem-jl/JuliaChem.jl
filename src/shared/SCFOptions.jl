@@ -191,6 +191,8 @@ function print_scf_options(options::SCFOptions)
             println("DF K Symmetry Type: ", options.df_K_sym_type)
             println("DF Adaptive basis limit ", options.df_adaptive_basis_limit)
             println("DF number of GPUs: ", options.num_devices)
+            println("DF Max Number of GPU Exchange Blocks: ", options.df_max_num_GPU_exchange_blocks)
+            println("DF GPU K Block Operations Threshold: ", options.df_GPU_K_block_opeartions_threshold)
         end
         println("--------------------------------")
     end
