@@ -20,6 +20,8 @@ mutable struct SCFOptions
     df_use_K_sym :: Bool
     df_K_sym_type :: String
     df_adaptive_basis_limit :: Int64
+    df_max_num_GPU_exchange_blocks :: Int64
+    df_GPU_K_block_opeartions_threshold :: Int64
 end 
 
 function create_default_scf_options()
@@ -42,7 +44,9 @@ function create_default_scf_options()
         SCF_Keywords.GPUAlgorithms.default_num_devices,
         SCF_Keywords.GPUAlgorithms.df_use_K_sym_default,
         SCF_Keywords.GPUAlgorithms.df_K_sym_type,
-        SCF_Keywords.GPUAlgorithms.df_adaptive_basis_limit
+        SCF_Keywords.GPUAlgorithms.df_adaptive_basis_limit, 
+        SCF_Keywords.GPUAlgorithms.df_max_num_GPU_exchange_blocks,
+        SCF_Keywords.GPUAlgorithms.df_GPU_K_block_opeartions_threshold
         )
 end
 
@@ -121,6 +125,14 @@ function create_scf_options(scf_flags)
     df_adaptive_basis_limit = haskey(scf_flags, GPUAlgorithms.df_adaptive_basis_limit) ?
         scf_flags[GPUAlgorithms.df_adaptive_basis_limit] : GPUAlgorithms.df_adaptive_basis_limit_default
 
+    df_GPU_K_block_opeartions_threshold = haskey(scf_flags, GPUAlgorithms.df_GPU_K_block_opeartions_threshold) ?
+        scf_flags[GPUAlgorithms.df_GPU_K_block_opeartions_threshold] : GPUAlgorithms.df_GPU_K_block_opeartions_threshold_default
+
+    df_max_num_GPU_exchange_blocks = haskey(scf_flags, GPUAlgorithms.df_max_num_GPU_exchange_blocks) ?
+        scf_flags[GPUAlgorithms.df_max_num_GPU_exchange_blocks] : GPUAlgorithms.df_max_num_GPU_exchange_blocks_default
+
+
+    
     return SCFOptions(
         do_density_fitting,
         contraction_mode,
@@ -140,7 +152,9 @@ function create_scf_options(scf_flags)
         df_num_devices,
         df_use_K_sym,
         df_K_sym_type,
-        df_adaptive_basis_limit
+        df_adaptive_basis_limit,
+        df_max_num_GPU_exchange_blocks,
+        df_GPU_K_block_opeartions_threshold
         )
 end
 

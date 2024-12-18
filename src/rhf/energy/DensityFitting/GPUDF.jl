@@ -63,28 +63,15 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
             block_size_deterimined = false
             scf_options.df_exchange_n_blocks = 1
-            while !block_size_deterimined && df_exchange_n_blocks < 16
+            while !block_size_deterimined && df_exchange_n_blocks < scf_options.df_max_num_GPU_exchange_blocks
                 number_of_operations = 2*QQ*n_ooc*(p÷scf_options.df_exchange_n_blocks)^2 
                 # println("number of operations per block = ", number_of_operations)
-                if number_of_operations > Int64(16^10)
+                if number_of_operations > Int64(scf_options.df_GPU_K_block_opeartions_threshold)
                     scf_options.df_exchange_n_blocks += 1
                 else # don't go over 16^10 operations per block
                     block_size_deterimined = true
                 end
             end
-            
-            # if QQ >= 3300
-            #     scf_options.df_exchange_n_blocks = 12
-            # elseif QQ >= 2200
-            #     scf_options.df_exchange_n_blocks = 8
-            # elseif QQ >= 1800
-            #     scf_options.df_exchange_n_blocks = 4
-            # elseif QQ > 1600 || scf_options.df_use_K_sym #if df_use_K_sym is true then we are using the symmetric algorithm default to 2 for small systems
-            #     scf_options.df_exchange_n_blocks = 2
-            # else
-            #     scf_options.df_exchange_n_blocks = 1
-            # end 
-        #else use the value set in the input file
         end
 
         if scf_options.df_use_K_sym && scf_options.df_exchange_n_blocks < 2
