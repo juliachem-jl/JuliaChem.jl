@@ -1,4 +1,5 @@
 using JuliaChem.Shared.Constants.SCF_Keywords
+using Printf
 mutable struct SCFOptions 
     density_fitting :: Bool 
     contraction_mode :: String
@@ -192,7 +193,7 @@ function print_scf_options(options::SCFOptions)
             println("DF Adaptive basis limit ", options.df_adaptive_basis_limit)
             println("DF number of GPUs: ", options.num_devices)
             println("DF Max Number of GPU Exchange Blocks: ", options.df_max_num_GPU_exchange_blocks)
-            println("DF GPU K Block Operations Threshold: ", options.df_GPU_K_block_opeartions_threshold)
+            @printf("DF GPU K Block Operations Threshold: %.1e\n", options.df_GPU_K_block_opeartions_threshold)
         end
         println("--------------------------------")
     end
