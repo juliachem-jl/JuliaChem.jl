@@ -1,8 +1,8 @@
 #=============================#
 #== put needed modules here ==#
 #=============================#
-ENV["MKL_DYNAMIC"] = false
-using MKL
+# ENV["MKL_DYNAMIC"] = false
+# using MKL
 println("starting density fitting test"); flush(stdout)
 using JuliaChem
 println("imported JuliaChem"); flush(stdout)
@@ -14,10 +14,10 @@ using MPI
 using LinearAlgebra
 using Base.Threads
 # using ThreadPinning
-using CUDA  
+# using CUDA  
 
 include("../example_scripts/full-rhf-repl.jl")
-include("../example_scripts/save_jc_timings.jl")
+# include("../example_scripts/save_jc_timings.jl")
 
 #==================================================================
  Script to check if the Density fitted method 
@@ -40,18 +40,18 @@ function check_density_fitted_method_matches_RHF(denity_fitted_input_file::Strin
       df_scf_results, density_fitted_properties = full_rhf(joinpath(@__DIR__, "../example_inputs/density_fitting/water_density_fitted_gpu.json"), output=outputval)
       run_time = @elapsed df_scf_results, density_fitted_properties = full_rhf(joinpath(@__DIR__, "../example_inputs/density_fitting/water_density_fitted_gpu.json"), output=outputval)
       
-      timings = df_scf_results["Timings"]
-      timings.run_name = "run_name_test_blah"
-      timings.run_time = run_time
-      name = "water_timings_$(timings.options[JCTC.contraction_mode])_$(timings.non_timing_data[JCTC.contraction_algorithm])"
-      name = replace(name, " "=> "_")
-      println("saving to $(name)")
-      save_jc_timings_to_hdf5(timings, joinpath(output_path, "$(name).h5"))
-      exit()
-      GC.gc(true)
-      CUDA.reclaim()
-      CUDA.synchronize()
-      println("finished warm up")
+      # timings = df_scf_results["Timings"]
+      # timings.run_name = "run_name_test_blah"
+      # timings.run_time = run_time
+      # name = "water_timings_$(timings.options[JCTC.contraction_mode])_$(timings.non_timing_data[JCTC.contraction_algorithm])"
+      # name = replace(name, " "=> "_")
+      # println("saving to $(name)")
+      # save_jc_timings_to_hdf5(timings, joinpath(output_path, "$(name).h5"))
+      # exit()
+      # GC.gc(true)
+      # CUDA.reclaim()
+      # CUDA.synchronize()
+      # println("finished warm up")
       
       # cpu_scf_results, cpu_properties = full_rhf(joinpath(@__DIR__, "../example_inputs/density_fitting/water_density_fitted_cpu.json"), output=outputval)
     # end
@@ -62,7 +62,7 @@ function check_density_fitted_method_matches_RHF(denity_fitted_input_file::Strin
     for i in 1:1
      
       # sleep(.1)
-      full_rhf(denity_fitted_input_file, output=outputval)
+      # full_rhf(denity_fitted_input_file, output=outputval)
       # scf_results, properties = full_rhf(input_file, output=outputval)
 
       # energy_diff = abs(scf_results["Energy"] - df_scf_results["Energy"])
@@ -108,7 +108,7 @@ end
 function main()
   println("Running Density Fitting Tests")
   println(BLAS.get_config())
-  println("number of gpus =  $(length(CUDA.devices()))")
+  # println("number of gpus =  $(length(CUDA.devices()))")
   JuliaChem.initialize() 
   println("initialized JuliaChem"); flush(stdout)
 
@@ -128,8 +128,8 @@ function main()
   # df_path = ARGS[1]
   # rhf_path = ARGS[2]
 
-  # df_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C20H42_dfGPU.json")
-  # rhf_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C20H42_df.json")
+  df_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C20H42_dfGPU.json")
+  rhf_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C20H42_df.json")
 
   # df_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C40H82_df.json")
   # rhf_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/C40H82.json")
@@ -141,47 +141,47 @@ function main()
   # df_path = joinpath(@__DIR__,  "../example_inputs/density_fitting/$(MP2_Num)_MP2_df.json")
   # rhf_path =  joinpath(@__DIR__, "../example_inputs/density_fitting/$(MP2_Num)_MP2.json")
 
-  # check_density_fitted_method_matches_RHF(df_path, rhf_path, true)
+  check_density_fitted_method_matches_RHF(df_path, rhf_path, "/home/jackson/source/JuliaChem.jl/testoutputs/", true)
 
 
-  df_rhf_path = joinpath(@__DIR__,  "/home/jackson/source/JuliaChem.jl/example_inputs/gly/df_gpu/gly")
-  rhf_path = joinpath(@__DIR__,  "/home/jackson/source/JuliaChem.jl/example_inputs/gly/df/gly")
+  # df_rhf_path = joinpath(@__DIR__,  "/home/jackson/source/JuliaChem.jl/example_inputs/gly/df_gpu/gly")
+  # rhf_path = joinpath(@__DIR__,  "/home/jackson/source/JuliaChem.jl/example_inputs/gly/df/gly")
 
-  output_path = "/home/jackson/source/JuliaChem.jl/testoutputs/"
+  # output_path = "/home/jackson/source/JuliaChem.jl/testoutputs/"
 
-  start_index = 1
-  end_index = 18
-  for i in start_index:end_index
-    println("Running polyglycine-$i")
+  # start_index = 1
+  # end_index = 18
+  # for i in start_index:end_index
+  #   println("Running polyglycine-$i")
   
-      for j in [1]
-        # try  
-          for k in 1:2 #run each input twice for each JC_K_RECT_N_BLOCKS
+  #     for j in [1]
+  #       # try  
+  #         for k in 1:2 #run each input twice for each JC_K_RECT_N_BLOCKS
 
-          df_gly_path = df_rhf_path * string(i) * ".json"
-          rhf_gly_path = rhf_path * string(i) * ".json"
+  #         df_gly_path = df_rhf_path * string(i) * ".json"
+  #         rhf_gly_path = rhf_path * string(i) * ".json"
 
 
-          # df_gly_path = "/home/jackson/source/benchmark_JC/JuliaChem-Benchmarks/DF-RHF-Benchmark/S22_3/cc-pvdz/ammonia_trimer.json"
-          # rhf_gly_path =  "/home/jackson/source/benchmark_JC/JuliaChem-Benchmarks/DF-RHF-Benchmark/S22_3/cc-pvdz/ammonia_trimer.json"
+  #         # df_gly_path = "/home/jackson/source/benchmark_JC/JuliaChem-Benchmarks/DF-RHF-Benchmark/S22_3/cc-pvdz/ammonia_trimer.json"
+  #         # rhf_gly_path =  "/home/jackson/source/benchmark_JC/JuliaChem-Benchmarks/DF-RHF-Benchmark/S22_3/cc-pvdz/ammonia_trimer.json"
 
-          check_density_fitted_method_matches_RHF(df_gly_path, rhf_gly_path, output_path, i == start_index && j == 1)
-          display(CUDA.pool_status())
-          GC.gc(true)
-          CUDA.reclaim()
-          CUDA.synchronize()
-          display(CUDA.pool_status())
-          GC.gc(true)
-          CUDA.reclaim()
-          CUDA.synchronize()
-          display(CUDA.pool_status())
-        end
-        # catch 
-        #   println("Failed on polyglycine-$i run $JC_K_RECT_N_BLOCKS")
-        # end
-      end
+  #         check_density_fitted_method_matches_RHF(df_gly_path, rhf_gly_path, output_path, i == start_index && j == 1)
+  #         display(CUDA.pool_status())
+  #         GC.gc(true)
+  #         CUDA.reclaim()
+  #         CUDA.synchronize()
+  #         display(CUDA.pool_status())
+  #         GC.gc(true)
+  #         CUDA.reclaim()
+  #         CUDA.synchronize()
+  #         display(CUDA.pool_status())
+  #       end
+  #       # catch 
+  #       #   println("Failed on polyglycine-$i run $JC_K_RECT_N_BLOCKS")
+  #       # end
+  #     end
    
-  end
+  # end
 end
 
 main()

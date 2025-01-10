@@ -1,5 +1,8 @@
 using CUDA
 
+struct CUDA_GPU <: GPU_Type end
+
+
 #inherit from SCFGPUData
 mutable struct SCFGPUData_cuda <: SCFGPUData
     device_Q_range_lengths::Array{Int,1}
@@ -42,6 +45,14 @@ function get_default_gpu_data_cuda() :: SCFGPUData_cuda
 
 end
 
+function CUDA_GPU_enabled()
+    return CUDA.functional()
+end
+
+function set_gpu_device(device_id::Int64, gpu_type::CUDA_GPU)
+    CUDA.device!(device_id)
+end
+
 function initialize!(gpu_data::SCFGPUData_cuda, num_devices::Int64)
     gpu_data.device_fock = Array{CuArray{Float64}}(undef, num_devices)
     gpu_data.device_coulomb_intermediate = Array{CuArray{Float64}}(undef, num_devices)
@@ -72,4 +83,10 @@ function initialize!(gpu_data::SCFGPUData_cuda, num_devices::Int64)
 
 end
 
-export initialize!, get_default_gpu_data_cuda, SCFGPUData_cuda
+function GPU_trtri!(gpu_type::CUDA_GPU, uplo::Char, diag::Char, A::CuArray{Float64})
+
+    CUBLAS.trtri!(uplo, diag, A)
+
+end
+
+export initialize!, get_default_gpu_data_cuda, SCFGPUData_cuda, CUDA_GPU_enabled, set_gpu_device, GPU_trtri!

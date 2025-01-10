@@ -117,6 +117,7 @@ function df_rhf_fock_build_BLAS!(scf_data, jeri_engine_thread_df::Vector{T}, bas
     two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
     calculate_B!(scf_data, two_center_integrals, jc_timing, scf_options, jeri_engine_thread_df, basis_sets)
         
+    
     jc_timing.timings[JCTiming_key(JCTC.two_eri_time,iteration)] = two_eri_time
     jc_timing.non_timing_data[JCTC.contraction_algorithm] = "dense cpu"
   end  
@@ -136,8 +137,13 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
   
   form_J_AB_inv_time = @elapsed begin
     if rank == 0 # avoid convergence problems always do this on rank 0
+      println("Calculating J_AB_inv")
       LAPACK.potrf!('L', two_center_integrals)
+      println("potrf done")
+      display(two_center_integrals)
       LAPACK.trtri!('L', 'N', two_center_integrals)
+      println("trtri done")
+      display(two_center_integrals)
     end
     if n_ranks > 1
         broadcast_two_center_integrals(two_center_integrals)
@@ -155,6 +161,8 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
     
     scf_data.D = three_center_integrals
     B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, two_center_integrals, reshape(scf_data.D, (AA, μμ * νν)))
+    println("B")
+    display(scf_data.D)
   else
 
     setup_unscreened_screening_matricies(basis_sets, scf_data)
@@ -203,6 +211,8 @@ function calculate_coulomb!(scf_data, occupied_orbital_coefficients, indicies, j
   J_time = @elapsed begin
     BLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
   end
+  println("J")
+  display(fock)
   jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
   jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
   jc_timing.timings[JCTiming_key(JCTC.J_time,iteration)] = J_time
@@ -216,7 +226,8 @@ function calculate_exchange!(scf_data, occupied_orbital_coefficients, indicies, 
   ooc = occupied_orbital_coefficients
   B = scf_data.D
   W = scf_data.D_tilde
-  fock = scf_data.two_electron_fock
+  # fock = scf_data.two_electron_fock
+  fock = zeros(Float64, (p, p))
 
   W_time = @elapsed begin
     BLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q * p)))
@@ -227,6 +238,9 @@ function calculate_exchange!(scf_data, occupied_orbital_coefficients, indicies, 
   jc_timing.timings[JCTiming_key(JCTC.W_time,iteration)] = W_time
   jc_timing.timings[JCTiming_key(JCTC.K_time,iteration)] = K_time
 
+  println("K")
+  display(fock)
+  scf_data.two_electron_fock += fock
 end
 
 function calculate_memory_usage(scf_data, iteration, scf_options, jc_timing)
