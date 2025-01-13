@@ -2,6 +2,11 @@ using MPI
 using CUDA
 using CUDA.CUBLAS
 using CUDA.CUSOLVER
+
+using AMDGPU
+import AMDGPU.rocSOLVER: potrf!
+import AMDGPU.rocBLAS: trmm!, gemm!, gemv!
+
 using LinearAlgebra
 using Base.Threads
 using HDF5
@@ -18,6 +23,8 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
     p = scf_data.μ
     n_ooc = scf_data.occ
+
+    F_ARR_type, I_ARR_type = get_array_types(scf_data.gpu_data.GPU_Type)
 
 
     #get environment variable for number of devices to use
@@ -36,7 +43,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
     if iteration == 1
 
-        if num_devices > length(CUDA.devices())
+        if num_devices > GPU_num_devices(scf_data.gpu_data.GPU_Type)
             error("Number of devices requested is greater than the number of devices available")
         end
 
@@ -56,7 +63,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             end
         end
 
-        calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
+        calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing, F_ARR_type, I_ARR_type)
        
         if scf_options.df_use_adaptive && scf_options.df_exchange_n_blocks == 0
             QQ = maximum(scf_data.gpu_data.device_Q_range_lengths)
@@ -83,38 +90,13 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
         #clear the memory 
         two_center_integrals = nothing
         three_center_integrals = nothing
-
-        scf_data.gpu_data.device_fock = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_coulomb_intermediate = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_coulomb = Array{CuArray{Float64}}(undef, num_devices)
-
-
-        scf_data.gpu_data.device_exchange_intermediate = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_occupied_orbital_coefficients = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_density = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_screened_density = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_non_zero_coefficients = Array{Array{CuArray{Float64}}}(undef, num_devices)
-        scf_data.gpu_data.device_K_block = Array{CuArray{Float64}}(undef, num_devices)
-        scf_data.gpu_data.device_non_square_K_block = Array{CuArray{Float64}}(undef, num_devices)
-
-        scf_data.gpu_data.device_range_p = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_range_start = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_range_end = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_range_sparse_start = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_range_sparse_end = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_sparse_to_p = Array{CuArray{Int64,1}}(undef, num_devices)
-        scf_data.gpu_data.device_sparse_to_q = Array{CuArray{Int64,1}}(undef, num_devices)
-
-        scf_data.gpu_data.sparse_pq_index_map = Array{CuArray{Int64,2}}(undef, num_devices)
         
-        scf_data.gpu_data.host_fock = Array{Array{Float64,2}}(undef, num_devices)
         scf_data.density = zeros(Float64, (scf_data.μ,scf_data.μ ))
-
         scf_data.non_zero_coefficients = zeros(Float64, n_ooc, p, p)
 
         
         Threads.@threads for device_id in 1:num_devices
-            CUDA.device!(device_id-1)
+            set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
 
             #device host data 
             global_device_id = device_id + (rank)*num_devices
@@ -126,28 +108,28 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_data.gpu_data.host_fock[device_id] = zeros(Float64, (scf_data.μ, scf_data.μ))
 
             #cuda device data
-            scf_data.gpu_data.device_fock[device_id] = CUDA.zeros(Float64,(scf_data.μ, scf_data.μ))
+            scf_data.gpu_data.device_fock[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64,(scf_data.μ, scf_data.μ))
 
-            scf_data.gpu_data.device_density[device_id] = CUDA.zeros(Float64, (p,p))
-            scf_data.gpu_data.device_screened_density[device_id] = CUDA.zeros(Float64, (scf_data.screening_data.screened_indices_count))
-            scf_data.gpu_data.device_coulomb[device_id] = CUDA.zeros(Float64, scf_data.screening_data.screened_indices_count)
-            scf_data.gpu_data.device_coulomb_intermediate[device_id] = CUDA.zeros(Float64,(Q))
+            scf_data.gpu_data.device_density[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (p,p))
+            scf_data.gpu_data.device_screened_density[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (scf_data.screening_data.screened_indices_count))
+            scf_data.gpu_data.device_coulomb[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, scf_data.screening_data.screened_indices_count)
+            scf_data.gpu_data.device_coulomb_intermediate[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64,(Q))
         
 
-            scf_data.gpu_data.device_occupied_orbital_coefficients[device_id] = CUDA.zeros(Float64, (scf_data.occ, scf_data.μ))
-            scf_data.gpu_data.device_non_zero_coefficients[device_id] = CUDA.zeros(Float64, n_ooc, p, p)
-            scf_data.gpu_data.device_exchange_intermediate[device_id] =  CUDA.zeros(Float64, (Q, n_ooc, p))
+            scf_data.gpu_data.device_occupied_orbital_coefficients[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (scf_data.occ, scf_data.μ))
+            scf_data.gpu_data.device_non_zero_coefficients[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, n_ooc, p, p)
+            scf_data.gpu_data.device_exchange_intermediate[device_id] =  GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (Q, n_ooc, p))
             lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)#should only be done on first iteration 
-            scf_data.gpu_data.device_K_block[device_id] = CUDA.zeros(Float64, (scf_data.screening_data.K_block_width, scf_data.screening_data.K_block_width, lower_triangle_length))
+            scf_data.gpu_data.device_K_block[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (scf_data.screening_data.K_block_width, scf_data.screening_data.K_block_width, lower_triangle_length))
             
             ################   duplicated logic! move this to a shared place   ##########################
             row_nonsquare_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
-            scf_data.gpu_data.device_non_square_K_block[device_id] = CUDA.zeros(Float64, (length(row_nonsquare_range), p))
+            scf_data.gpu_data.device_non_square_K_block[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (length(row_nonsquare_range), p))
             ############################################################################################################
             
             if rank == 0 && device_id == 1
-                scf_data.gpu_data.device_H = CUDA.zeros(Float64, (scf_data.μ, scf_data.μ))
-                CUDA.copyto!(scf_data.gpu_data.device_H, H)
+                scf_data.gpu_data.device_H = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (scf_data.μ, scf_data.μ))
+                copyto!(scf_data.gpu_data.device_H, H)
             end
             #timing gpu size in MB 
         end
@@ -188,7 +170,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
         Threads.@sync for device_id in 1:num_devices
             Threads.@spawn begin
                 gpu_fock_times[device_id] = @elapsed begin 
-                    CUDA.device!(device_id-1)
+                    set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
                     global_device_id = device_id + (rank)*num_devices
                     Q_length = scf_data.gpu_data.device_Q_range_lengths[global_device_id]
 
@@ -202,8 +184,8 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     host_fock = scf_data.gpu_data.host_fock[device_id]
                 
                 
-                    CUDA.copyto!(ooc, occupied_orbital_coefficients)
-                    CUDA.synchronize()
+                    copyto!(ooc, occupied_orbital_coefficients)
+                    GPU_synchronize()
                     non_zero_coeff_times[device_id] = @elapsed form_nozero_coefficient_matrix!(scf_data, device_id)
 
                     W_times[device_id]  = @elapsed calculate_W_screened_GPU(device_id, scf_data, threads_per_device)
@@ -219,10 +201,10 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     end
                     if rank == 0 && device_id == 1
                         H_add_time = @elapsed begin
-                            CUDA.axpy!(1.0, scf_data.gpu_data.device_H, fock)
+                            axpy!(1.0, scf_data.gpu_data.device_H, fock)
                         end
                     end
-                    CUDA.synchronize()
+                    GPU_synchronize()
                     density_times[device_id]  = @elapsed form_screened_density!(scf_data, device_id)
                     V_times[device_id]  = @elapsed calculate_V_screened_GPU(V, B, density)
                     J_times[device_id]  = @elapsed calculate_J_screened_GPU(J, B, V)
@@ -230,7 +212,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     # calculate_J_screened_symmetric_GPU(density, host_J, J, V, B, scf_data, device_id, n_j_streams_per_device)
                 
                     # J_times = @elapsed calculate_J_screened_symmetric_GPU(density, host_J, J, V, B, scf_data, device_id, n_j_streams_per_device)
-                    # CUDA.synchronize()
+                    # GPU_synchronize()
 
                     gpu_copy_J_time[device_id] = @elapsed begin 
                         numblocks = ceil(Int64, scf_data.screening_data.screened_indices_count/256)
@@ -241,7 +223,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
     
                         @cuda threads=threads blocks=numblocks copy_screened_J_to_fock_upper_triangle(fock, J, device_sparse_to_p, 
                             device_sparse_to_q, scf_data.screening_data.screened_indices_count)
-                        CUDA.synchronize() 
+                        GPU_synchronize() 
                     end
                   
                     gpu_copy_sym_time[device_id] = @elapsed begin
@@ -256,7 +238,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                         else
                             @cuda threads=threads blocks=numblocks copy_lower_to_upper_kernel(fock)
                         end
-                        CUDA.synchronize() 
+                        GPU_synchronize() 
                     end
                 end # gpu fock time elapsed
             end #spawn     
@@ -265,9 +247,9 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
     fock_copy_time = @elapsed begin
         Threads.@threads for device_id in 1:num_devices
-            CUDA.device!(device_id-1)
-            CUDA.copyto!(scf_data.gpu_data.host_fock[device_id], scf_data.gpu_data.device_fock[device_id])  
-            CUDA.synchronize()
+            set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
+            copyto!(scf_data.gpu_data.host_fock[device_id], scf_data.gpu_data.device_fock[device_id])  
+            GPU_synchronize()
         end
         scf_data.two_electron_fock = scf_data.gpu_data.host_fock[1]
         for device_id in 2:num_devices
@@ -332,8 +314,8 @@ function form_screened_density!(scf_data::SCFData, device_id::Int64)
     screened_density = scf_data.gpu_data.device_screened_density[device_id]
     occupied_orbital_coefficients = scf_data.gpu_data.device_occupied_orbital_coefficients[device_id]
 
-    CUDA.CUBLAS.gemm!('T', 'N', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, density)
-    CUDA.synchronize()
+    gemm!('T', 'N', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, density)
+    GPU_synchronize()
     
     sparse_pq_index_map = scf_data.gpu_data.sparse_pq_index_map[device_id]
 
@@ -341,7 +323,7 @@ function form_screened_density!(scf_data::SCFData, device_id::Int64)
     threads = min(256, p)
 
     @cuda threads=threads blocks=numblocks form_screened_density_kernel!(screened_density, density, sparse_pq_index_map, p)
-    CUDA.synchronize()
+    GPU_synchronize()
 
 end
 
@@ -367,9 +349,6 @@ function setup_gpu_screening_data!(scf_data::SCFData, num_devices::Int64)
     range_sparse_start = Array{Int64}(undef, n_ranges)
     range_sparse_end = Array{Int64}(undef, n_ranges)
 
-
-
-
     range_index = 1
     Threads.@threads for pp in 1:p 
         pp_range_index = 1
@@ -385,37 +364,37 @@ function setup_gpu_screening_data!(scf_data::SCFData, num_devices::Int64)
     
     Threads.@sync for device_id in 1:num_devices
         Threads.@spawn begin
-            CUDA.device!(device_id-1)
-            scf_data.gpu_data.device_range_p[device_id] = CUDA.zeros(Int, n_ranges)
-            scf_data.gpu_data.device_range_start[device_id] = CUDA.zeros(Int, n_ranges)
-            scf_data.gpu_data.device_range_end[device_id] = CUDA.zeros(Int, n_ranges)
-            scf_data.gpu_data.device_range_sparse_start[device_id] = CUDA.zeros(Int, n_ranges)
-            scf_data.gpu_data.device_range_sparse_end[device_id] = CUDA.zeros(Int, n_ranges)    
-            scf_data.gpu_data.device_sparse_to_p[device_id] = CUDA.zeros(Int64, scf_data.screening_data.screened_indices_count)
-            scf_data.gpu_data.device_sparse_to_q[device_id] = CUDA.zeros(Int64, scf_data.screening_data.screened_indices_count)
+            set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
+            scf_data.gpu_data.device_range_p[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, n_ranges)
+            scf_data.gpu_data.device_range_start[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, n_ranges)
+            scf_data.gpu_data.device_range_end[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, n_ranges)
+            scf_data.gpu_data.device_range_sparse_start[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, n_ranges)
+            scf_data.gpu_data.device_range_sparse_end[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, n_ranges)    
+            scf_data.gpu_data.device_sparse_to_p[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int64, scf_data.screening_data.screened_indices_count)
+            scf_data.gpu_data.device_sparse_to_q[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int64, scf_data.screening_data.screened_indices_count)
             
-            scf_data.gpu_data.sparse_pq_index_map[device_id] = CUDA.zeros(Int, (p, p))
+            scf_data.gpu_data.sparse_pq_index_map[device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Int, (p, p))
 
-            CUDA.copyto!(scf_data.gpu_data.sparse_pq_index_map[device_id], scf_data.screening_data.sparse_pq_index_map)
-            CUDA.copyto!(scf_data.gpu_data.device_range_p[device_id], range_p)
-            CUDA.copyto!(scf_data.gpu_data.device_range_start[device_id], range_start)
-            CUDA.copyto!(scf_data.gpu_data.device_range_end[device_id], range_end)
-            CUDA.copyto!(scf_data.gpu_data.device_range_sparse_start[device_id], range_sparse_start)
-            CUDA.copyto!(scf_data.gpu_data.device_range_sparse_end[device_id], range_sparse_end)
-            CUDA.synchronize() 
+            copyto!(scf_data.gpu_data.sparse_pq_index_map[device_id], scf_data.screening_data.sparse_pq_index_map)
+            copyto!(scf_data.gpu_data.device_range_p[device_id], range_p)
+            copyto!(scf_data.gpu_data.device_range_start[device_id], range_start)
+            copyto!(scf_data.gpu_data.device_range_end[device_id], range_end)
+            copyto!(scf_data.gpu_data.device_range_sparse_start[device_id], range_sparse_start)
+            copyto!(scf_data.gpu_data.device_range_sparse_end[device_id], range_sparse_end)
+            GPU_synchronize() 
         end
     end
 
     Threads.@sync for device_id in 1:num_devices
         Threads.@spawn begin
-            CUDA.device!(device_id-1)
+            set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
             numblocks = ceil(Int64, n_ranges/256)
             threads = min(256, n_ranges)
 
             @cuda threads=threads blocks=numblocks create_sparse_to_p_q_kernel(scf_data.gpu_data.device_sparse_to_p[device_id],
                 scf_data.gpu_data.device_sparse_to_q[device_id], 
                 scf_data.gpu_data.sparse_pq_index_map[device_id], p)
-            CUDA.synchronize()
+            GPU_synchronize()
         end 
     end
 end
@@ -439,7 +418,7 @@ function create_sparse_to_p_q_kernel(sparse_to_p::CuDeviceArray{Int64},
 end
 
 function form_nozero_coefficient_matrix!(scf_data::SCFData, device_id :: Int64)
-    CUDA.device!(device_id-1)
+    set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
     
 
     n_ranges = scf_data.gpu_data.n_screened_occupied_orbital_ranges
@@ -454,7 +433,7 @@ function form_nozero_coefficient_matrix!(scf_data::SCFData, device_id :: Int64)
         scf_data.gpu_data.device_range_end[device_id],
         scf_data.gpu_data.device_range_sparse_start[device_id],
         n_ranges)
-    CUDA.synchronize()
+    GPU_synchronize()
 end
 
 function build_non_zero_coefficients_kernel(non_zero_coefficients::CuDeviceArray{Float64}, 
@@ -537,14 +516,14 @@ function copy_upper_to_lower_kernel(A ::CuDeviceArray{Float64})
 end
 
 
-function calculate_V_screened_GPU(V::CuArray, B::CuArray, density::CuArray)
-    CUDA.CUBLAS.gemv!('N', 1.0, B, density, 0.0, V)
-    CUDA.synchronize()
+function calculate_V_screened_GPU(V, B, density)
+    gemv!('N', 1.0, B, density, 0.0, V)
+    GPU_synchronize()
 end
 
-function calculate_J_screened_GPU(J::CuArray,  B::CuArray, V::CuArray)
-    CUDA.CUBLAS.gemv!('T', 2.0, B, V, 0.0, J)
-    CUDA.synchronize()
+function calculate_J_screened_GPU(J, B, V)
+    gemv!('T', 2.0, B, V, 0.0, J)
+    GPU_synchronize()
 end
 
 
@@ -561,124 +540,31 @@ function calculate_W_screened_GPU(device_id, scf_data::SCFData, num_threads ::In
     num_streams = min(16, num_threads)
     p_per_stream = p÷num_streams
 
-    # Threads.@sync begin 
-    #     for stream_id in 1:num_streams
-            # Threads.@spawn begin
-                # pp_start = (stream_id-1)*p_per_stream + 1
-                # pp_end = stream_id*p_per_stream
-                # if stream_id == num_streams
-                #     pp_end = p
-                # end
-                CUDA.device!(device_id-1)
-                for pp in 1:p
-                    K = scf_data.screening_data.non_screened_p_indices_count[pp]
-                    A_cu = view(B, :, scf_data.screening_data.sparse_p_start_indices[pp]:
-                        scf_data.screening_data.sparse_p_start_indices[pp]+K-1)
-                    B_cu = view(non_zero_coefficients, :,1:K,pp)
-                    C_cu = view(W, :,:,pp)
-                    CUDA.CUBLAS.gemm!('N','T', alpha, A_cu, B_cu, beta, C_cu)
-                end
-            # end
-    #     end 
-    # end
-    CUDA.synchronize()
-end
 
-function calcululate_K_no_sym_GPU!(fock::CuArray{Float64,2}, W::CuArray{Float64,3},p::Int64, n_ooc::Int64, Q::Int64, device_id::Int64)
-    CUDA.CUBLAS.gemm!('T', 'N', -1.0, reshape(W, (Q*n_ooc, p)), reshape(W, (Q*n_ooc, p)), 0.0, fock)
-    CUDA.synchronize()
-end
-
-function calculate_K_upper_diagonal_rectangle_blocks(fock::CuArray{Float64,2}, W::CuArray{Float64,3}, Q_length::Int, 
-    device_id, scf_data::SCFData, scf_options::SCFOptions, num_threads::Int64)
-    CUDA.device!(device_id-1)
-
-    n_occ = scf_data.occ
-    p = scf_data.μ
-    Q = Q_length #device Q length
-
-    transA = 'T'
-    transB = 'N'
-    alpha = -1.0
-    beta = 0.0
-
-    if scf_options.df_exchange_n_blocks == 0
-        n_blocks = 2
-        if p > 1600
-            n_blocks = 16
-        elseif p > 800
-            n_blocks = 8
-        elseif p > 400
-            n_blocks = 4
-        end
-    else
-        n_blocks = scf_options.df_exchange_n_blocks
+    set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
+    for pp in 1:p
+        K = scf_data.screening_data.non_screened_p_indices_count[pp]
+        A_cu = view(B, :, scf_data.screening_data.sparse_p_start_indices[pp]:
+            scf_data.screening_data.sparse_p_start_indices[pp]+K-1)
+        B_cu = view(non_zero_coefficients, :,1:K,pp)
+        C_cu = view(W, :,:,pp)
+        gemm!('N','T', alpha, A_cu, B_cu, beta, C_cu)
     end
 
-    block_width = p÷n_blocks
-
-    scf_data.gpu_data.device_K_block = Array{Array{CuArray{Float64}}}(undef, 1)
-    scf_data.gpu_data.device_K_block[device_id] = Array{CuArray{Float64}}(undef, n_blocks)
-
-    for block_index in 1:n_blocks
-        scf_data.gpu_data.device_K_block[device_id][block_index] = CUDA.zeros(Float64, (block_index*block_width, block_width)) #todo move to iteration 1
-    end
-    device_K_blocks = scf_data.gpu_data.device_K_block[device_id]
-    
-    num_streams = min(num_threads, n_blocks)
-
-    Threads.@sync begin
-        for stream in 1:num_streams
-            Threads.@spawn begin
-                CUDA.device!(device_id-1)
-                for block_index in stream:num_streams:n_blocks
-                    M = block_index*block_width
-                    block_p_range = 1:M
-                    block_q_range = (block_index-1)*block_width+1:block_index*block_width
-
-
-                    A = reshape(view(W, :,:, block_p_range), (Q*n_occ, M))
-                    B = reshape(view(W, :,:, block_q_range), (Q*n_occ, block_width))
-                    
-                    CUDA.CUBLAS.gemm!(transA, transB, alpha, A, B, beta, device_K_blocks[block_index]) #transpose(W[:,1:M])*W[:,q_start:q_end] = retangular block of size M X block_width 
-                    # fock[block_p_range, block_q_range] .= scf_data.gpu_data.device_K_block[block_index]
-                    CUDA.synchronize()
-
-                    CUDA.copyto!(view(fock, block_p_range, block_q_range), device_K_blocks[block_index])
-                    # CUDA.copyto!(view(fock, block_q_range, block_p_range), transpose(device_K_blocks[block_index]))
-                    CUDA.synchronize()
-                end
-            end 
-        end
-        if p%n_blocks != 0
-            Threads.@spawn begin
-                M = p
-                N = p%n_blocks
-                K = Q*n_occ
-
-                q_non_square_range = p-N+1:p
-
-
-                A_non_square = reshape(view(W, :,:, 1:p), (K, p))
-                B_non_square = reshape(view(W, :,:, q_non_square_range), (K, N))
-                C_non_square = view(fock, :, q_non_square_range)
-
-                CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square)
-            
-                CUDA.synchronize()
-                # CUDA.copyto!(view(fock, q_non_square_range, :), C_non_square)
-            end
-        end      
-    end
+    GPU_synchronize()
 end
 
+function calcululate_K_no_sym_GPU!(fock, W, p::Int64, n_ooc::Int64, Q::Int64, device_id::Int64)
+    gemm!('T', 'N', -1.0, reshape(W, (Q*n_ooc, p)), reshape(W, (Q*n_ooc, p)), 0.0, fock)
+    GPU_synchronize()
+end
 
 function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64,2},
-     fock::CuArray{Float64,2}, W::CuArray{Float64,3}, Q_length::Int, 
+     fock, W, Q_length::Int, 
      device_id, scf_data::SCFData, scf_options::SCFOptions,
      lower_triangle_length :: Int64, num_threads_avail::Int64)
 
-    CUDA.device!(device_id-1)
+    set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
 
     n_ooc = scf_data.occ
     p = scf_data.μ
@@ -700,7 +586,7 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
 
     # no streams if the system is large enough to use this method the GEMM should saturate GPU
 
-    CUDA.device!(device_id-1)
+    set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
     exchange_block = view(device_K_block, :,:, 1)
 
     for index in 1:lower_triangle_length
@@ -711,14 +597,14 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
         A = reshape(view(W, :,:, p_range), (K, K_block_width))
         B = reshape(view(W, :,:, q_range), (K, K_block_width))
 
-        CUDA.CUBLAS.gemm!(transA, transB, alpha, A, B, beta, exchange_block)
-        CUDA.synchronize()
-        CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
-        CUDA.synchronize()
+        gemm!(transA, transB, alpha, A, B, beta, exchange_block)
+        GPU_synchronize()
+        copyto!(view(fock, p_range, q_range), exchange_block)
+        GPU_synchronize()
 
         #copy transpose 
-        CUDA.copyto!(view(fock, q_range, p_range), transpose(exchange_block))
-        CUDA.synchronize()
+        copyto!(view(fock, q_range, p_range), transpose(exchange_block))
+        GPU_synchronize()
     end
 
     if p % scf_options.df_exchange_n_blocks != 0 # if square blocks don't cover the entire pq space
@@ -734,29 +620,29 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
         C_non_square = scf_data.gpu_data.device_non_square_K_block[device_id]
         
     
-        CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
-        CUDA.synchronize()
+        gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
+        GPU_synchronize()
 
-        CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
-        CUDA.synchronize()
+        copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
+        GPU_synchronize()
 
         #copy transpose
-        CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
-        CUDA.synchronize()
+        copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
+        GPU_synchronize()
 
     end 
 end
 
-function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
+function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing, F_ARR_type :: Type)
     COMM = MPI.COMM_WORLD
     rank = MPI.Comm_rank(COMM)
     n_ranks = MPI.Comm_size(COMM)
     pq = scf_data.screening_data.screened_indices_count
-    scf_data.gpu_data.device_B = Array{CuArray{Float64}}(undef, num_devices)
-    device_three_center_integrals = Array{CuArray{Float64}}(undef, num_devices)
+    
+    device_three_center_integrals = Array{F_ARR_type}(undef, num_devices)
     host_B_send_buffers = Array{Array{Float64}}(undef, num_devices)
-    device_J_AB_invt = Array{CuArray{Float64}}(undef, num_devices)
-    device_B_send_buffers = Array{CuArray{Float64}}(undef, num_devices)
+    device_J_AB_invt = Array{F_ARR_type}(undef, num_devices)
+    device_B_send_buffers = Array{F_ARR_type}(undef, num_devices)
 
     device_B = scf_data.gpu_data.device_B
 
@@ -773,39 +659,39 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
     
     Threads.@sync for setup_device_id in 1:num_devices
         Threads.@spawn begin
-            CUDA.device!(setup_device_id-1)
+            set_gpu_device(setup_device_id-1, scf_data.gpu.data.GPU_Type)
             global_device_id = setup_device_id  + device_id_offset
             # buffer for J_AB_invt for each device max size needed is A*A 
             # for certain B calculations the device will only need a subset of this
             # and will ref   device!(device_id - 1)reference it with a view referencing the front of the underlying array
-            device_J_AB_invt[setup_device_id] = CUDA.zeros(Float64, (scf_data.A, scf_data.A))
+            device_J_AB_invt[setup_device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (scf_data.A, scf_data.A))
 
            
             #todo calculate the three center integrals per device (probably could directly copy to the device while it is being calculated)
-            device_three_center_integrals[setup_device_id] = CUDA.zeros(Float64, size(three_center_integrals[setup_device_id]))
-            CUDA.copyto!(device_three_center_integrals[setup_device_id], three_center_integrals[setup_device_id])
+            device_three_center_integrals[setup_device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type,Float64, size(three_center_integrals[setup_device_id]))
+            copyto!(device_three_center_integrals[setup_device_id], three_center_integrals[setup_device_id])
 
-            device_B[setup_device_id] = CUDA.zeros(Float64, (device_Q_range_lengths[global_device_id], pq))
+            device_B[setup_device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (device_Q_range_lengths[global_device_id], pq))
             if num_devices_global > 1 
-                device_B_send_buffers[setup_device_id] = CUDA.zeros(Float64, (max_device_Q_range_length * pq))
+                device_B_send_buffers[setup_device_id] = GPU_zeros(scf_data.gpu.data.GPU_Type, Float64, (max_device_Q_range_length * pq))
                 host_B_send_buffers[setup_device_id] = zeros(Float64, (max_device_Q_range_length * pq))
             end
-            CUDA.synchronize()
+            GPU_synchronize()
         end #spawn
     end
 
     if rank == 0
-        CUDA.device!(0)
+        set_gpu_device(0, scf_data.gpu.data.GPU_Type)
         J_AB_time = @elapsed begin
-            CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
-            CUDA.synchronize()
-            CUDA.CUSOLVER.potrf!('L', device_J_AB_invt[1])
-            CUDA.synchronize()
-            CUDA.CUSOLVER.trtri!('L', 'N', device_J_AB_invt[1])
-            CUDA.synchronize()
+            copyto!(device_J_AB_invt[1], two_center_integrals)
+            GPU_synchronize()
+            potrf!('L', device_J_AB_invt[1])
+            GPU_synchronize()
+            GPU_trtri!(scf_data.gpu_data.GPU_Type, 'L', 'N', device_J_AB_invt[1])
+            GPU_synchronize()
         end
 
-        CUDA.copyto!(two_center_integrals, device_J_AB_invt[1]) # copy back because taking subarrays on the GPU is slow / doesn't work. Need to look into if this is possible with CUDA.jl
+        copyto!(two_center_integrals, device_J_AB_invt[1]) # copy back because taking subarrays on the GPU is slow / doesn't work. Need to look into if this is possible with CUDA.jl
         
         jc_timing.timings[JCTC.form_J_AB_inv_time] = J_AB_time
     end
@@ -817,23 +703,23 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
     
 
     if n_ranks == 1 && num_devices == 1
-        CUDA.copyto!(device_J_AB_invt[1], two_center_integrals)
-        CUDA.synchronize()
+        copyto!(device_J_AB_invt[1], two_center_integrals)
+        GPU_synchronize()
         B_time = @elapsed begin
-            CUDA.CUBLAS.trmm!('L', 'L', 'N', 'N', 1.0, device_J_AB_invt[1], device_three_center_integrals[1], device_B[1])   
-            CUDA.synchronize() 
+            trmm!('L', 'L', 'N', 'N', 1.0, device_J_AB_invt[1], device_three_center_integrals[1], device_B[1])   
+            GPU_synchronize() 
         end
-        CUDA.unsafe_free!(device_J_AB_invt[1])
-        CUDA.unsafe_free!(device_three_center_integrals[1])
-        CUDA.reclaim()
+        # CUDA.unsafe_free!(device_J_AB_invt[1])
+        # CUDA.unsafe_free!(device_three_center_integrals[1])
+        # CUDA.reclaim() todo put back reclaim 
         jc_timing.timings[JCTC.B_time] = B_time
         return
     end
 
     for device_id_two_eri in 2:num_devices
-        CUDA.device!(device_id_two_eri-1)
-        CUDA.copyto!(device_J_AB_invt[device_id_two_eri], two_center_integrals)
-        CUDA.synchronize()
+        set_gpu_device(device_id_two_eri-1, scf_data.gpu.data.GPU_Type)
+        copyto!(device_J_AB_invt[device_id_two_eri], two_center_integrals)
+        GPU_synchronize()
     end
 
     
@@ -845,12 +731,12 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
             array_size = rec_device_Q_range_length*pq
             Threads.@sync for r_send_device_id in 1:num_devices
                 Threads.@spawn begin
-                    CUDA.device!(r_send_device_id-1) 
+                    set_gpu_device(r_send_device_id-1, scf_data.gpu.data.GPU_Type, scf_data.gpu.data.GPU_Type) 
                         global_send_device_id = r_send_device_id + device_id_offset 
                         send_device_Q_range_length = device_Q_range_lengths[global_send_device_id]
                         J_AB_invt_for_device = two_center_integrals[device_Q_indices[global_recieve_device_id],device_Q_indices[global_send_device_id]]
                         device_J_AB_inv_count = send_device_Q_range_length*rec_device_Q_range_length # total number of elements in the J_AB_invt matrix for the device
-                        CUDA.copyto!(device_J_AB_invt[r_send_device_id],1,J_AB_invt_for_device,1,device_J_AB_inv_count) #copy the needed J_AB_invt data to the device 
+                        copyto!(device_J_AB_invt[r_send_device_id],1,J_AB_invt_for_device,1,device_J_AB_inv_count) #copy the needed J_AB_invt data to the device 
 
                         J_AB_INV_view = reshape(
                             view(device_J_AB_invt[r_send_device_id],
@@ -858,14 +744,13 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
 
 
                         if global_send_device_id == global_recieve_device_id
-                            CUDA.CUBLAS.gemm!('N', 'N', 1.0, J_AB_INV_view, device_three_center_integrals[r_send_device_id], 1.0, device_B[rank_recieve_device_id])
+                            gemm!('N', 'N', 1.0, J_AB_INV_view, device_three_center_integrals[r_send_device_id], 1.0, device_B[rank_recieve_device_id])
                         else
                             send_B_view = view(device_B_send_buffers[r_send_device_id], 1:array_size)
-                            CUDA.CUBLAS.gemm!('N', 'N', 1.0, J_AB_INV_view, device_three_center_integrals[r_send_device_id],
+                            gemm!('N', 'N', 1.0, J_AB_INV_view, device_three_center_integrals[r_send_device_id],
                                 0.0, reshape(send_B_view, (rec_device_Q_range_length, pq)))
                         end
-                        CUDA.synchronize()
-
+                        GPU_synchronize()
                 end #spawn
             end #sync for 
 
@@ -880,37 +765,37 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
                     end
 
                     #copy from the sending device to the host send buffer
-                    CUDA.device!(rank_send_device_id-1) do 
-                        CUDA.copyto!(host_B_send_buffers[rank_send_device_id], 1, 
+                    set_gpu_device(rank_send_device_id-1, scf_data.gpu.data.GPU_Type) do 
+                        copyto!(host_B_send_buffers[rank_send_device_id], 1, 
                         device_B_send_buffers[rank_send_device_id], 1, array_size)
                     end
                     
 
                     send_unique_tag = send_rank*100000 + recieve_rank*10000 + global_send_device_id*1000 + global_recieve_device_id*100
                     if send_rank == recieve_rank # devices belong to the same rank 
-                        CUDA.device!(rank_recieve_device_id-1) do 
-                        CUDA.copyto!(device_B_send_buffers[rank_recieve_device_id],
+                        set_gpu_device(rank_recieve_device_id-1, scf_data.gpu.data.GPU_Type) do 
+                        copyto!(device_B_send_buffers[rank_recieve_device_id],
                             1, host_B_send_buffers[rank_send_device_id], 1, array_size)
                         end
                         
                     elseif rank == send_rank
-                        CUDA.device!(rank_send_device_id-1) do 
+                        set_gpu_device(rank_send_device_id-1, scf_data.gpu.data.GPU_Type) do 
                             MPI.Send(host_B_send_buffers[rank_send_device_id], recieve_rank, send_unique_tag , COMM)
                         end
                     elseif rank == recieve_rank
-                        CUDA.device!(rank_recieve_device_id-1) do 
+                        set_gpu_device(rank_recieve_device_id-1, scf_data.gpu.data.GPU_Type) do 
                             MPI.Recv!(host_B_send_buffers[rank_recieve_device_id], send_rank, send_unique_tag, COMM)
-                            CUDA.copyto!(device_B_send_buffers[rank_recieve_device_id],1,
+                            copyto!(device_B_send_buffers[rank_recieve_device_id],1,
                             host_B_send_buffers[rank_recieve_device_id],1, array_size)
-                            CUDA.synchronize()
+                            GPU_synchronize()
                         end
                     end
                         
                     if rank == recieve_rank # add the sent buffer to the device B matrix
-                        CUDA.device!(rank_recieve_device_id-1) do 
+                        set_gpu_device(rank_recieve_device_id-1, scf_data.gpu.data.GPU_Type) do 
                             device_B_send_view = reshape(view(device_B_send_buffers[rank_recieve_device_id], 1:array_size), (rec_device_Q_range_length, pq))
-                            CUDA.axpy!(1.0, device_B_send_view, device_B[rank_recieve_device_id])
-                            CUDA.synchronize()
+                            axpy!(1.0, device_B_send_view, device_B[rank_recieve_device_id])
+                            GPU_synchronize()
                         end                
                     end
                 end
@@ -921,10 +806,10 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
     jc_timing.timings[JCTC.B_time] = B_time
 
     for device_id in 1:num_devices
-        CUDA.device!(device_id-1)
-        CUDA.unsafe_free!(device_B_send_buffers[device_id])
-        CUDA.unsafe_free!(device_J_AB_invt[device_id])
-        CUDA.unsafe_free!(device_three_center_integrals[device_id])
+        set_gpu_device(device_id-1, scf_data.gpu.data.GPU_Type)
+        # CUDA.unsafe_free!(device_B_send_buffers[device_id])
+        # CUDA.unsafe_free!(device_J_AB_invt[device_id])
+        # CUDA.unsafe_free!(device_three_center_integrals[device_id]) # todo put back reclaim
     end
 
 end

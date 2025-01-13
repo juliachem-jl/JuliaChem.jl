@@ -89,4 +89,8 @@ function GPU_trtri!(gpu_type::CUDA_GPU, uplo::Char, diag::Char, A::CuArray{Float
 
 end
 
+function GPU_num_devices(gpu_type::CUDA_GPU) :: Int64
+    return length(CUDA.devices())
+end
+
 export initialize!, get_default_gpu_data_cuda, SCFGPUData_cuda, CUDA_GPU_enabled, set_gpu_device, GPU_trtri!

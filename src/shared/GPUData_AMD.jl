@@ -56,4 +56,9 @@ function GPU_trtri!(gpu_type::AMD_GPU, uplo::Char, diag::Char, A::ROCArray{Float
     LinearAlgebra.LAPACK.chkargsok(LinearAlgebra.BlasInt(info))
 end
 
-export get_default_gpu_data_AMD, AMD_GPU_enabled, set_gpu_device, get_array_types, GPU_zeros, GPU_synchronize, GPU_trtri!
+function GPU_num_devices(gpu_type::AMD_GPU) :: Int64
+    return length(AMDGPU.devices())
+end
+
+
+export get_default_gpu_data_AMD, AMD_GPU_enabled, set_gpu_device, get_array_types, GPU_zeros, GPU_synchronize, GPU_trtri!, GPU_num_devices
