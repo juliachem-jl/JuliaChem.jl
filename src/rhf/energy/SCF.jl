@@ -391,11 +391,12 @@ function scf_cycles_kernel(F::Matrix{Float64}, D::Matrix{Float64},
 
     # gpu_data = get_default_gpu_data_cuda() #CUDA GPU
     #check if AMD is available
+
     if CUDA_GPU_enabled()
-      gpu_data = get_default_gpu_data_cuda() #CUDA GPU
+      gpu_data = get_default_gpu_data_cuda(scf_options.num_devices) #CUDA GPU
       println("using CUDA GPU")
     elseif AMD_GPU_enabled()
-      gpu_data = get_default_gpu_data_AMD() #AMD GPU
+      gpu_data = get_default_gpu_data_AMD(scf_options.num_devices) #AMD GPU
       println("using AMD GPU")
     end
   end

@@ -16,4 +16,4 @@ function SCFGPUDataNone()
     return SCFGPUDataNoGPU()
 end
 
-export SCFGPUDataNone, SCFGPUDataNoGPU, GPU_Type_None
+export SCFGPUDataNone, SCFGPUDataNoGPU, GPU_Type_None, GPU_Type

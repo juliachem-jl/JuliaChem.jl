@@ -38,6 +38,9 @@ end
 
 
 function initialize_generic!(F_ARR::Type, I_ARR::Type, gpu_data::SCFGPUData_generic, num_devices::Int64, gpu_type::GPU_Type)
+
+    println("num_devices: ", num_devices)
+
     gpu_data.device_fock = Array{F_ARR}(undef, num_devices)
     gpu_data.device_coulomb_intermediate = Array{F_ARR}(undef, num_devices)
     gpu_data.device_coulomb = Array{F_ARR}(undef, num_devices)

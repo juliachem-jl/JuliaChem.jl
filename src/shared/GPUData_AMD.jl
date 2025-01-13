@@ -7,17 +7,17 @@ const RocAI64 = AMDGPU.ROCArray{Int64}
 struct AMD_GPU <: GPU_Type end
 
 
-function get_default_gpu_data_AMD() :: SCFGPUData_generic
+function get_default_gpu_data_AMD(num_devices) :: SCFGPUData_generic
 
-    scf_data = SCFGPUData_generic{ROCArray{Float64}, ROCArray{Int64}}(
+    gpu_data = SCFGPUData_generic{ROCArray{Float64}, ROCArray{Int64}}(
         [], [], [], [], [], 
         [], [], [], [], [], 
         [], [], [], [], [],
         [], [], [], [] ,[],
         [], [], [], [], [],
         [], 0, 0, [], AMD_GPU())
-    initialize_generic!(RocAF64, RocAI64, scf_data, 1, AMD_GPU())
-    return scf_data
+    initialize_generic!(RocAF64, RocAI64, gpu_data, num_devices, AMD_GPU())
+    return gpu_data
 end
 
 function AMD_GPU_enabled()
@@ -61,4 +61,4 @@ function GPU_num_devices(gpu_type::AMD_GPU) :: Int64
 end
 
 
-export get_default_gpu_data_AMD, AMD_GPU_enabled, set_gpu_device, get_array_types, GPU_zeros, GPU_synchronize, GPU_trtri!, GPU_num_devices
+export get_default_gpu_data_AMD, AMD_GPU_enabled, set_gpu_device, get_array_types, GPU_zeros, GPU_synchronize, GPU_trtri!, GPU_num_devices, AMD_GPU

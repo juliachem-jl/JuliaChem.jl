@@ -1,7 +1,8 @@
 using CUDA
 
 struct CUDA_GPU <: GPU_Type end
-
+const CUDAAF64 = CUDA.CuArray{Float64}
+const CUDAAI64 = CUDA.CuArray{Int64}
 
 #inherit from SCFGPUData
 mutable struct SCFGPUData_cuda <: SCFGPUData
@@ -37,12 +38,13 @@ mutable struct SCFGPUData_cuda <: SCFGPUData
     device_Q_index_lengths::Array{Int,1}
 end
 
-function get_default_gpu_data_cuda() :: SCFGPUData_cuda
-    return SCFGPUData_cuda([], [], [], [], [], [], [], [], [],
+function get_default_gpu_data_cuda(num_devices) :: SCFGPUData_cuda
+    gpu_data = SCFGPUData_cuda([], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [],
         CuArray{Float64}(undef, 0), [], 0, 0, [])
-
+        initialize_generic!(CUDAAF64, CUDAAI64, gpu_data, num_devices, CUDA_GPU())
+    return gpu_data
 end
 
 function CUDA_GPU_enabled()
@@ -93,4 +95,4 @@ function GPU_num_devices(gpu_type::CUDA_GPU) :: Int64
     return length(CUDA.devices())
 end
 
-export initialize!, get_default_gpu_data_cuda, SCFGPUData_cuda, CUDA_GPU_enabled, set_gpu_device, GPU_trtri!
+export initialize!, get_default_gpu_data_cuda, SCFGPUData_cuda, CUDA_GPU_enabled, set_gpu_device, GPU_trtri!, CUDA_GPU, GPU_num_devices
