@@ -105,7 +105,6 @@ function allocate_memory_density_fitting_dense(scf_data, scf_options, indicies)
 
   scf_data.density = zeros(Float64, (μμ, μμ))
   scf_data.coulomb_intermediate = zeros(Float64, AA)
-  scf_data.density = zeros(Float64, (μμ, μμ))
 end
 
 function df_rhf_fock_build_BLAS!(scf_data, jeri_engine_thread_df::Vector{T}, basis_sets::CalculationBasisSets,
@@ -196,7 +195,15 @@ function calculate_coulomb!(scf_data, occupied_orbital_coefficients, indicies, j
   fock = scf_data.two_electron_fock
   density = scf_data.density 
 
+  BLAS_threads = Base.Threads.nthreads()
+
+  blas_threads = BLAS.get_num_threads()
+  if scf_data.μ < 200 
+      BLAS.set_num_threads(1)
+  end
   density_time = @elapsed BLAS.gemm!('N', 'T', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, density)
+  BLAS.set_num_threads(BLAS_threads)
+
   V_time = @elapsed begin
     BLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
   end
