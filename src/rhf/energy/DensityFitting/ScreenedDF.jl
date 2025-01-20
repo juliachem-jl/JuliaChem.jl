@@ -299,8 +299,13 @@ end
 
 function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_timing::JCTiming, iteration)
     density_time = @elapsed begin 
+        blas_threads = BLAS.get_num_threads()
+        if scf_data.μ < 200 
+            BLAS.set_num_threads(1)
+        end
         BLAS.gemm!('T', 'N', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, scf_data.density)
         copy_screened_density_to_array(scf_data)
+        BLAS.set_num_threads(blas_threads)
     end
 
     #if env use no sym J 
