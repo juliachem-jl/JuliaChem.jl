@@ -43,7 +43,7 @@ function set_converged!(timing::JCTiming,scf_converged::Bool, iterations::Int, e
     timing.scf_energy = energy
 end
 
-function set_basis_info!(jc_timing::JCTiming, basis::Basis, aux_basis::Basis)
+function set_basis_info!(jc_timing::JCTiming, basis::Basis, aux_basis::Union{Basis, Nothing})
     jc_timing.non_timing_data[JCTC.n_basis_functions] = string(basis.norb)
     if !isnothing(aux_basis)
         jc_timing.non_timing_data[JCTC.n_auxiliary_basis_functions] = string(aux_basis.norb)
