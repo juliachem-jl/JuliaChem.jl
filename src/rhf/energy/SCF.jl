@@ -930,7 +930,7 @@ end
   bound *= maxden
 
   #== fock build for significant shell quartets ==# 
-  if Base.abs_float(bound) >= 0 
+  if Base.abs_float(bound) >= cutoff 
     #= set up some variables =#
     nμ = μsh.nbas
     nν = νsh.nbas
