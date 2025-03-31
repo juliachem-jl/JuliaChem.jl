@@ -137,13 +137,8 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
   
   form_J_AB_inv_time = @elapsed begin
     if rank == 0 # avoid convergence problems always do this on rank 0
-      println("Calculating J_AB_inv")
       LAPACK.potrf!('L', two_center_integrals)
-      println("potrf done")
-      display(two_center_integrals)
       LAPACK.trtri!('L', 'N', two_center_integrals)
-      println("trtri done")
-      display(two_center_integrals)
     end
     if n_ranks > 1
         broadcast_two_center_integrals(two_center_integrals)
@@ -211,8 +206,6 @@ function calculate_coulomb!(scf_data, occupied_orbital_coefficients, indicies, j
   J_time = @elapsed begin
     BLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
   end
-  println("J")
-  display(fock)
   jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
   jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
   jc_timing.timings[JCTiming_key(JCTC.J_time,iteration)] = J_time
