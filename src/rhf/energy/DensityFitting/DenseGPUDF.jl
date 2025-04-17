@@ -171,6 +171,7 @@ function fock_build_kernel_dense_GPU(device_id, scf_data, occupied_orbital_coeff
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_V_time, device_id, iteration)] = V_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_J_time, device_id, iteration)] = J_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_K_time, device_id, iteration)] = K_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_H_add_time, device_id, iteration)] = GPU_H_add_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_density_time, device_id, iteration)] = density_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.gpu_fock_time, device_id, iteration)] = gpu_fock_time
 end
