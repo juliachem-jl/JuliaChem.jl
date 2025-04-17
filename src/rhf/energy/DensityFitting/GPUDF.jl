@@ -294,7 +294,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
     jc_timing.timings[JCTiming_key(JCTC.W_time, iteration)] = maximum(W_times)
     jc_timing.timings[JCTiming_key(JCTC.V_time, iteration)] = maximum(V_times)
     jc_timing.timings[JCTiming_key(JCTC.J_time, iteration)] = maximum(J_times)
-    jc_timing.timings[JCTiming_key(JCTC.fock_time, iteration)] = maximum(gpu_fock_times)
+    jc_timing.timings[JCTiming_key(JCTC.fock_time, iteration)] = total_fock_gpu_time + fock_copy_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_H_add_time, 1, iteration)] = H_add_time
 
 

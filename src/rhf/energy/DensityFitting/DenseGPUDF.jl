@@ -68,97 +68,111 @@ function df_rhf_fock_build_dense_GPU!(scf_data, jeri_engine_thread_df::Vector{T}
     end
 
 
-    J_times = zeros(Float64, num_devices)
-    W_times = zeros(Float64, num_devices)
-    K_times = zeros(Float64, num_devices)
-    V_times = zeros(Float64, num_devices)
+
     gpu_fock_times = zeros(Float64, num_devices)
     density_times = zeros(Float64, num_devices)
     GPU_H_add_time = 0.0
     total_fock_gpu_time = @elapsed begin
-        Threads.@threads for device_id in 1:num_devices
-            CUDA.device!(device_id-1)
-            Q = scf_data.gpu_data.device_Q_index_lengths[device_id]
-            ooc = scf_data.gpu_data.device_occupied_orbital_coefficients[device_id]
-            density = scf_data.gpu_data.device_density[device_id]
-            
-            B = scf_data.gpu_data.device_B[device_id]
-            V = scf_data.gpu_data.device_coulomb_intermediate[device_id]
-            W = scf_data.gpu_data.device_exchange_intermediate[device_id]
-            fock = scf_data.gpu_data.device_fock[device_id]
-            
-            gpu_fock_times[device_id] = @elapsed begin
-                CUDA.copyto!(ooc, occupied_orbital_coefficients)
-                CUDA.synchronize()
-
-                density_times[device_id] = @elapsed begin 
-                    CUDA.CUBLAS.gemm!('N', 'T', 1.0, ooc, ooc, 0.0, density)
-                    CUDA.synchronize()          
-                end
-                V_times[device_id] = @elapsed begin
-                    CUDA.CUBLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
-                    CUDA.synchronize()      
-                end    
-                J_times[device_id] = @elapsed begin
-                    CUDA.CUBLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
-                    CUDA.synchronize()          
-                end
-                W_times[device_id] = @elapsed begin
-                    CUDA.CUBLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q* p)))
-                    CUDA.synchronize()  
-                end
-                K_times[device_id] = @elapsed begin
-                    CUDA.CUBLAS.gemm!('T', 'N', -1.0, reshape(W, (n_ooc * Q, p)), reshape(W, (n_ooc * Q, p)), 1.0, fock)
-                    CUDA.synchronize()          
-                end
-                if device_id == 1
-                    GPU_H_add_time = @elapsed begin
-                        CUDA.axpy!(1.0, scf_data.gpu_data.device_H, fock)
-                        CUDA.synchronize()   
-                    end
-                end
-     
-            end # end gpu_fock_time
-        end # end Threads.@threads
-        
-     
+        if num_devices > 1 #performance tweak for small systems and single device don't use threads because it intermittenly takes longer to spin up threads than to build the fock matrix
+            Threads.@threads for device_id in 1:num_devices 
+                fock_build_kernel_dense_GPU(device_id, scf_data, occupied_orbital_coefficients, iteration, scf_options, jc_timing)
+            end
+        else 
+            fock_build_kernel_dense_GPU(1, scf_data, occupied_orbital_coefficients, iteration, scf_options, jc_timing)
+        end
     end # end total_fock_gpu_time
 
 
     fock_copy_time = @elapsed begin
-        CUDA.copyto!(scf_data.gpu_data.host_fock[1], scf_data.gpu_data.device_fock[1])
-        scf_data.two_electron_fock = scf_data.gpu_data.host_fock[1]
-        Threads.@threads for device_id in 2:num_devices
-            CUDA.copyto!(scf_data.gpu_data.host_fock[device_id], scf_data.gpu_data.device_fock[device_id])
+        if num_devices > 1
+            Threads.@threads for device_id in 1:num_devices
+                CUDA.copyto!(scf_data.gpu_data.host_fock[device_id], scf_data.gpu_data.device_fock[device_id])
+                gpu_fock_times[device_id] = jc_timing.timings[JCTiming_GPUkey(JCTC.gpu_fock_time, device_id, iteration)]
+                density_times[device_id] = jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_density_time, device_id, iteration)]
+            end
+        else #performance tweak for small systems and single device don't use threads because it intermittenly takes longer to spin up threads than to build the fock matrix
+            CUDA.copyto!(scf_data.gpu_data.host_fock[1], scf_data.gpu_data.device_fock[1])
+            gpu_fock_times[1] = jc_timing.timings[JCTiming_GPUkey(JCTC.gpu_fock_time, 1, iteration)]
+            density_times[1] = jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_density_time, 1, iteration)]
         end
+        scf_data.two_electron_fock = scf_data.gpu_data.host_fock[1]
         for device_id in 2:num_devices
             axpy!(1.0, scf_data.gpu_data.host_fock[device_id], scf_data.two_electron_fock)
         end
     end
 
- 
-
-
-    for device_id in 1:num_devices
-        jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_W_time, device_id, iteration)] = W_times[device_id]
-        jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_V_time, device_id, iteration)] = V_times[device_id]
-        jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_J_time, device_id, iteration)] = J_times[device_id]
-        jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_K_time, device_id, iteration)] = K_times[device_id]
-        jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_density_time, device_id, iteration)] = density_times[device_id]
-        jc_timing.timings[JCTiming_GPUkey(JCTC.gpu_fock_time, device_id, iteration)] = gpu_fock_times[device_id]
-    end
-
-    jc_timing.timings[JCTiming_key(JCTC.K_time, iteration)] = maximum(K_times)
-    jc_timing.timings[JCTiming_key(JCTC.W_time, iteration)] = maximum(W_times)
-    jc_timing.timings[JCTiming_key(JCTC.V_time, iteration)] = maximum(V_times)
-    jc_timing.timings[JCTiming_key(JCTC.J_time, iteration)] = maximum(J_times)
-    jc_timing.timings[JCTiming_key(JCTC.fock_time, iteration)] = maximum(gpu_fock_times)
+    # jc_timing.timings[JCTiming_key(JCTC.K_time, iteration)] = maximum(K_times)
+    # jc_timing.timings[JCTiming_key(JCTC.W_time, iteration)] = maximum(W_times)
+    # jc_timing.timings[JCTiming_key(JCTC.V_time, iteration)] = maximum(V_times)
+    # jc_timing.timings[JCTiming_key(JCTC.J_time, iteration)] = maximum(J_times)
+    jc_timing.timings[JCTiming_key(JCTC.fock_time, iteration)] = total_fock_gpu_time + fock_copy_time
     jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_H_add_time, 1, iteration)] = GPU_H_add_time
 
 
     jc_timing.timings[JCTiming_key(JCTC.fock_gpu_cpu_copy_reduce_time, iteration)] = fock_copy_time
     jc_timing.timings[JCTiming_key(JCTC.total_fock_gpu_time, iteration)] = total_fock_gpu_time
 
+end
+
+function fock_build_kernel_dense_GPU(device_id, scf_data, occupied_orbital_coefficients, iteration, scf_options, jc_timing)
+    CUDA.device!(device_id-1)
+    Q = scf_data.gpu_data.device_Q_index_lengths[device_id]
+    n_ooc = scf_data.occ 
+    ooc = scf_data.gpu_data.device_occupied_orbital_coefficients[device_id]
+    density = scf_data.gpu_data.device_density[device_id]
+    pq = scf_data.μ^2
+    p = scf_data.μ
+
+
+    B = scf_data.gpu_data.device_B[device_id]
+    V = scf_data.gpu_data.device_coulomb_intermediate[device_id]
+    W = scf_data.gpu_data.device_exchange_intermediate[device_id]
+    fock = scf_data.gpu_data.device_fock[device_id]
+    
+    density_time = 0.0
+    V_time = 0.0
+    W_time = 0.0
+    J_time = 0.0
+    K_time = 0.0
+    GPU_H_add_time = 0.0
+    gpu_fock_time = @elapsed begin
+        CUDA.copyto!(ooc, occupied_orbital_coefficients)
+
+        density_time = @elapsed begin 
+            CUDA.CUBLAS.gemm!('N', 'T', 1.0, ooc, ooc, 0.0, density)
+            CUDA.synchronize()   
+
+        end
+        V_time = @elapsed begin
+            CUDA.CUBLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
+            CUDA.synchronize()   
+        end    
+        J_time = @elapsed begin
+            CUDA.CUBLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
+            CUDA.synchronize()   
+        end
+        W_time = @elapsed begin
+            CUDA.CUBLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q* p)))
+            CUDA.synchronize()   
+        end
+        K_time = @elapsed begin
+            CUDA.CUBLAS.gemm!('T', 'N', -1.0, reshape(W, (n_ooc * Q, p)), reshape(W, (n_ooc * Q, p)), 1.0, fock)
+            CUDA.synchronize()   
+        end
+        if device_id == 1
+            GPU_H_add_time = @elapsed begin
+                CUDA.axpy!(1.0, scf_data.gpu_data.device_H, fock)
+                CUDA.synchronize()   
+            end
+        end
+    end # end gpu_fock_time
+
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_W_time, device_id, iteration)] = W_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_V_time, device_id, iteration)] = V_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_J_time, device_id, iteration)] = J_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_K_time, device_id, iteration)] = K_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.GPU_density_time, device_id, iteration)] = density_time
+    jc_timing.timings[JCTiming_GPUkey(JCTC.gpu_fock_time, device_id, iteration)] = gpu_fock_time
 end
 
 function calculate_B_dense_GPU(scf_data, num_devices, jc_timing::JCTiming, jeri_engine_thread_df, basis_sets, scf_options)
