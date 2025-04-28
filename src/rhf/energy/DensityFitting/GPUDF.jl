@@ -118,6 +118,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
         scf_data.gpu_data.W_pointers_W = Array{Array{CuPtr{Float64}}}(undef, num_devices)
         scf_data.gpu_data.W_group_sizes = Array{Array{Int,1}}(undef, num_devices)
         scf_data.gpu_data.W_group_count = Array{Int,1}(undef, num_devices)
+        scf_data.gpu_data.W_non_screened_p_indices_count = Array{Array{Int,1}}(undef, num_devices)
         Threads.@threads for device_id in 1:num_devices
             CUDA.device!(device_id-1)
 
@@ -157,9 +158,9 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             #timing gpu size in MB 
 
             #pointers for W calculation 
-            W_indicies = LinearIndices(size(scf_data.gpu_data.device_exchange_intermediate[device_id])) 
-            B_indicies = LinearIndices(size(scf_data.gpu_data.device_B[device_id])) 
-            non_zero_coeff_indicies = LinearIndices(size(scf_data.gpu_data.device_non_zero_coefficients[device_id]))
+            # W_indicies = LinearIndices(size(scf_data.gpu_data.device_exchange_intermediate[device_id])) 
+            # B_indicies = LinearIndices(size(scf_data.gpu_data.device_B[device_id])) 
+            # non_zero_coeff_indicies = LinearIndices(size(scf_data.gpu_data.device_non_zero_coefficients[device_id]))
         
             scf_data.gpu_data.W_pointers_B[device_id] = Array{CuPtr{Float64}}(undef, scf_data.μ)
             scf_data.gpu_data.W_pointers_non_zero_coeff[device_id] = Array{CuPtr{Float64}}(undef, scf_data.μ)
@@ -170,31 +171,42 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             key_value_pairs = [(k, v) for (k, v) in enumerate(scf_data.screening_data.non_screened_p_indices_count)]
             sorted_key_value_pairs = sort(key_value_pairs, by=x->x[2])
             
-            current_group = sorted_key_value_pairs[1][2]
+            scf_data.gpu_data.W_group_sizes[device_id] = Vector{Int64}()
+            scf_data.gpu_data.W_non_screened_p_indices_count[device_id] = Vector{Int64}()
+
+            sorted_indices_count_p_tuples = order_gemm_groups_index_count(scf_data.screening_data.non_screened_p_indices_count)
             number_of_groups = 0
-            group_size = Array{Int64}()
-            for ordered_index in 1:scf_data.μ
-                pp = sorted_key_value_pairs[ordered_index][1]
-                group = sorted_key_value_pairs[ordered_index][2]
-
-                if group == current_group
-                    group_size[number_of_groups] += 1
-                else
-                    current_group = group
+            indicies_count = 0
+            ordered_index = 1
+            #put together pointers for the calculation of W in order by the size of the number of non screened p indices (which is the k dimension of the gemm)
+            for k_p_tuple in sorted_indices_count_p_tuples
+                # for pp in 1:p
+                if indicies_count != k_p_tuple[1] #new group 
                     number_of_groups += 1
-                    push!(group_size, 1)
+                    indicies_count = k_p_tuple[1]
+                    push!(scf_data.gpu_data.W_non_screened_p_indices_count[device_id], indicies_count)
+                    push!(scf_data.gpu_data.W_group_sizes[device_id], 1)
+                else
+                    scf_data.gpu_data.W_group_sizes[device_id][number_of_groups] += 1
                 end
+        
+                pp = k_p_tuple[2]
+                #pointer to the section of the B matrix that is used for this p
+                scf_data.gpu_data.W_pointers_B[device_id][ordered_index] = 
+                     pointer(view(scf_data.gpu_data.device_B[device_id], :, scf_data.screening_data.sparse_p_start_indices[pp]:scf_data.screening_data.sparse_p_start_indices[pp]+indicies_count-1))
+                #pointer to the section of the non zero coefficients that is used for this p
+                scf_data.gpu_data.W_pointers_non_zero_coeff[device_id][ordered_index] = 
+                    pointer(view(scf_data.gpu_data.device_non_zero_coefficients[device_id], :,1:indicies_count,pp))
+                #pointer to the section of the W matrix that is used for this p
+                scf_data.gpu_data.W_pointers_W[device_id][ordered_index] = 
+                    pointer(view(scf_data.gpu_data.device_exchange_intermediate[device_id], :,:,pp))
 
-                scf_data.gpu_data.W_pointers_B[device_id][ordered_index] = pointer(scf_data.gpu_data.device_B[device_id], 
-                    B_indicies[1, scf_data.screening_data.sparse_p_start_indices[pp]])
-                scf_data.gpu_data.W_pointers_non_zero_coeff[device_id][ordered_index] = pointer(scf_data.gpu_data.device_non_zero_coefficients[device_id], 
-                    non_zero_coeff_indicies[1,1,pp])
-                scf_data.gpu_data.W_pointers_W[device_id][ordered_index] = pointer(scf_data.gpu_data.device_exchange_intermediate[device_id],
-                    W_indicies[1,1,pp])
-                scf_data.gpu_data.W_group_sizes[device_id] = group_size
-                scf_data.gpu_data.W_group_count[device_id] = number_of_groups
+                ordered_index += 1
             end
-        end
+
+            scf_data.gpu_data.W_group_count[device_id] = number_of_groups
+          
+        end 
         
         gpu_screening_setup = @elapsed setup_gpu_screening_data!(scf_data, num_devices)
 
@@ -246,7 +258,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     CUDA.synchronize()
 
                     non_zero_coeff_times[device_id] = @elapsed form_nozero_coefficient_matrix!(scf_data, device_id)
-                    W_times[device_id]  = @elapsed calculate_W_screened_GPU(device_id, scf_data, threads_per_device)
+                    W_times[device_id]  = @elapsed calculate_W_screened_GPU_batched(device_id, scf_data, threads_per_device)
                     if use_K_rect 
                         K_times[device_id]  = @elapsed calculate_K_upper_diagonal_rectangle_blocks(fock, W, Q_length, device_id,
                         scf_data, scf_options, threads_per_device)
@@ -327,9 +339,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
     jc_timing.timings[JCTiming_key(JCTC.fock_gpu_cpu_copy_reduce_time, iteration)] = fock_copy_time
     jc_timing.timings[JCTiming_key(JCTC.total_fock_gpu_time, iteration)] = total_fock_gpu_time
 
-    println("W times = ", W_times)
     println("max W time = ", maximum(W_times))
-    println("K_times = ", K_times)
     println("max K time = ", maximum(K_times))
     println("total fock time = ", total_fock_gpu_time + fock_copy_time)
     # gc_time = @elapsed GC.gc()
@@ -581,27 +591,135 @@ end
 
 
 function calculate_W_screened_GPU(device_id, scf_data::SCFData, num_threads ::Int64)
+    p = scf_data.μ
+   
+    alpha = 1.0
+    beta = 0.0
+
+    B = scf_data.gpu_data.device_B[device_id] # B intermediate from integral contraction 
+    W = scf_data.gpu_data.device_exchange_intermediate[device_id] # W intermediate for exchange calculation
+
+    non_zero_coefficients = scf_data.gpu_data.device_non_zero_coefficients[device_id]
+    num_streams = min(16, num_threads)
+    p_per_stream = p÷num_streams
+
+    # Threads.@sync begin 
+    #     for stream_id in 1:num_streams
+            # Threads.@spawn begin
+                # pp_start = (stream_id-1)*p_per_stream + 1
+                # pp_end = stream_id*p_per_stream
+                # if stream_id == num_streams
+                #     pp_end = p
+                # end
+                CUDA.device!(device_id-1)
+                for pp in 1:p
+                    K = scf_data.screening_data.non_screened_p_indices_count[pp]
+                    A_cu = view(B, :, scf_data.screening_data.sparse_p_start_indices[pp]:
+                        scf_data.screening_data.sparse_p_start_indices[pp]+K-1)
+                    B_cu = view(non_zero_coefficients, :,1:K,pp)
+                    C_cu = view(W, :,:,pp)
+                    CUDA.CUBLAS.gemm!('N','T', alpha, A_cu, B_cu, beta, C_cu)
+                end
+            # end
+    #     end 
+    # end
+    CUDA.synchronize()
+
+
+end
+
+function pointer_gemm_grouped_batched!(
+    transA::Vector{CUDA.CUBLAS.cublasOperation_t},
+    transB::Vector{CUDA.CUBLAS.cublasOperation_t},
+    alpha_array::Vector{Float64},
+    m_array::Vector{Int64},
+    n_array::Vector{Int64},
+    k_array::Vector{Int64},
+    A::Vector{CuPtr{Float64}},
+    lda_array::Vector{Int64},
+    B::Vector{CuPtr{Float64}},
+    ldb_array::Vector{Int64},
+    beta_array::Vector{Float64},
+    C::Vector{CuPtr{Float64}},
+    ldc_array::Vector{Int64},
+    group_count::Int64,
+    group_size::Vector{Int64})
+
+    Aptrs = CuArray(A)
+    Bptrs = CuArray(B)
+    Cptrs = CuArray(C)
+    hndle = CUDA.CUBLAS.handle()
+    try
+        ## XXX: cublasXgemmGroupedBatched does not seem to support device pointers
+        CUDA.CUBLAS.cublasSetPointerMode_v2(hndle, CUDA.CUBLAS.CUBLAS_POINTER_MODE_HOST)
+
+    if CUBLAS.version() >= v"12.0"
+        CUDA.CUBLAS.cublasDgemmGroupedBatched_64(hndle, transA, transB, m_array, n_array, k_array, alpha_array, Aptrs, lda_array,
+            Bptrs, ldb_array, beta_array, Cptrs, ldc_array, group_count, group_size)
+    else
+        CUDA.CUBLAS.cublasDgemmGroupedBatched(hndle, transA, transB, m_array, n_array, k_array, alpha_array, Aptrs, lda_array,
+            Bptrs, ldb_array, beta_array, Cptrs, ldc_array, group_count, group_size)
+    end
+    finally
+        CUDA.CUBLAS.cublasSetPointerMode_v2(hndle, CUDA.CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
+    end
+    CUDA.unsafe_free!(Cptrs)
+    CUDA.unsafe_free!(Bptrs)
+    CUDA.unsafe_free!(Aptrs)
+    
+end
+
+function calculate_W_screened_GPU_batched(device_id, scf_data::SCFData, num_threads ::Int64)
    
     #gemm parameters m = lda, n = ldb, k = ldc
     m = scf_data.gpu_data.device_Q_range_lengths[device_id] #device Q length
     n = scf_data.occ 
+    group_count = scf_data.gpu_data.W_group_count[device_id]
 
     CUDA.device!(device_id-1)
-    hndl = CUDA.CUBLAS.handle()
-   
-    CUDA.CUBLAS.cublasDgemmGroupedBatched_64(hndl, transa_array,
-     transb_array, m_array, n_array, k_array, alpha_array, Aarray,
-      lda_array, Barray, ldb_array, beta_array, 
-      Carray, ldc_array, group_count, group_size)
-    # @time for pp in 1:scf_data.μ
 
-        #  CUDA.CUBLAS.cublasDgemm_v2_64(hndl,
-        #     'N', 'T', m, n, scf_data.screening_data.non_screened_p_indices_count[pp],
-        #     1.0, scf_data.gpu_data.W_pointers_B[device_id][pp], m,
-        #     scf_data.gpu_data.W_pointers_non_zero_coeff[device_id][pp], n,
-        #     0.0, scf_data.gpu_data.W_pointers_W[device_id][pp], m)
-    # end
+    transa_array = Vector{CUDA.CUBLAS.cublasOperation_t}(undef,  group_count)
+    transa_array .=  CUDA.CUBLAS.CUBLAS_OP_N
+    transb_array = Vector{CUDA.CUBLAS.cublasOperation_t}(undef,  group_count)
+    transb_array .= CUDA.CUBLAS.CUBLAS_OP_T
+
+    m_array = zeros(Int64, group_count)
+    m_array .= m
+    n_array = zeros(Int64, group_count)
+    n_array .= n
+
+    alpha_array = zeros(Float64, group_count)
+    alpha_array .= 1.0
+    beta_array = zeros(Float64, group_count)
+    beta_array .= 0.0
+
+   
+    k_array = scf_data.gpu_data.W_non_screened_p_indices_count[device_id]
+
+    pointer_gemm_grouped_batched!(transa_array, transb_array, 
+    alpha_array, m_array, n_array, k_array,
+        scf_data.gpu_data.W_pointers_B[device_id], m_array, 
+        scf_data.gpu_data.W_pointers_non_zero_coeff[device_id], n_array,
+        beta_array, scf_data.gpu_data.W_pointers_W[device_id], m_array, 
+        group_count, scf_data.gpu_data.W_group_sizes[device_id])   
     CUDA.synchronize()
+
+    # transA::Vector{CUDA.CUBLAS.cublasOperation_t},
+    # transB::Vector{CUDA.CUBLAS.cublasOperation_t},
+    # alpha_array::Vector{Float64},
+    # m_array::Vector{Int64},
+    # n_array::Vector{Int64},
+    # k_array::Vector{Int64},
+    # A::Vector{CuPtr{Float64}},
+    # lda_array::Vector{Int64},
+    # B::Vector{CuPtr{Float64}},
+    # ldb_array::Vector{Int64},
+    # beta_array::Vector{Float64},
+    # C::Vector{CuPtr{Float64}},
+    # ldc_array::Vector{Int64},
+    # group_count::Int64,
+    # group_size::Vector{Int64})
+
 end
 
 function calcululate_K_no_sym_GPU!(fock::CuArray{Float64,2}, W::CuArray{Float64,3},p::Int64, n_ooc::Int64, Q::Int64, device_id::Int64)
@@ -1009,4 +1127,18 @@ function calculate_screened_GPU_data_size_MB(scf_data::SCFData, device_id)
     gpu_data_size_MB += sizeof(scf_data.gpu_data.device_non_square_K_block[device_id])
     
     return gpu_data_size_MB / 1024^2
+end
+
+
+function order_gemm_groups_index_count(non_screened_p_indices_count)
+    k_p_tuples = []
+    k_p_dict = Dict{Int64, Vector{Int64}}() #mapping between non_screen_p_indicies_count and index p 
+    for (pp, k) in enumerate(non_screened_p_indices_count)
+        push!(k_p_tuples, (k, pp))
+    end
+    # length_of_groups = length.(values(k_p_dict))
+    # println("length_of_groups: ", length_of_groups)
+    # Sort the tuples by k
+    sorted_tuples = sort(k_p_tuples, by=x -> x[1], rev=true)
+    return sorted_tuples
 end

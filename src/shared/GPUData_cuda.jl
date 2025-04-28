@@ -37,13 +37,14 @@ mutable struct SCFGPUData_cuda <: SCFGPUData
     W_pointers_W::Array{Array{CuPtr{Float64},1},1}
     W_group_sizes::Array{Array{Int,1},1}
     W_group_count::Array{Int,1}
+    W_non_screened_p_indices_count::Array{Array{Int,1},1}
 end
 
 function get_default_gpu_data_cuda() :: SCFGPUData_cuda
     return SCFGPUData_cuda([], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [],
-        CuArray{Float64}(undef, 0), [], 0, 0, [], [],[],[],[])
+        CuArray{Float64}(undef, 0), [], 0, 0, [], [],[],[],[], [], [])
 
 end
 
@@ -77,8 +78,9 @@ function initialize!(gpu_data::SCFGPUData_cuda, num_devices::Int64)
     gpu_data.W_pointers_B = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
     gpu_data.W_pointers_non_zero_coeff = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
     gpu_data.W_pointers_W = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
-    gpu_data.W_group_sizes = Array{Array{Int,1}}(undef, num_devices)
-    gpu_data.W_group_count = Array{Int,1}(undef, num_devices)
+    gpu_data.W_group_sizes = Array{Array{Int64,1}}(undef, num_devices)
+    gpu_data.W_group_count = Array{Int64,1}(undef, num_devices)
+    gpu_data.W_non_screened_p_indices_count = Array{Array{Int64,1}}(undef, num_devices)
     
 
 end
