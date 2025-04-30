@@ -77,6 +77,8 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_options.df_exchange_n_blocks = 2
         end
 
+        println("number of blocks: ", scf_options.df_exchange_n_blocks)
+
         scf_data.screening_data.K_block_width = p÷scf_options.df_exchange_n_blocks
 
         #clear the memory 
@@ -119,6 +121,17 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
         scf_data.gpu_data.W_group_sizes = Array{Array{Int,1}}(undef, num_devices)
         scf_data.gpu_data.W_group_count = Array{Int,1}(undef, num_devices)
         scf_data.gpu_data.W_non_screened_p_indices_count = Array{Array{Int,1}}(undef, num_devices)
+        
+        scf_data.gpu_data.K_pointers_A = Array{Array{CuPtr{Float64}}}(undef, num_devices)
+        scf_data.gpu_data.K_pointers_B = Array{Array{CuPtr{Float64}}}(undef, num_devices)
+        scf_data.gpu_data.K_pointers_C = Array{Array{CuPtr{Float64}}}(undef, num_devices)
+
+        scf_data.gpu_data.K_ranges_p = Array{CuArray{Int64,1}}(undef, num_devices)
+        scf_data.gpu_data.K_ranges_q = Array{CuArray{Int64,1}}(undef, num_devices)
+
+        scf_data.gpu_data.K_exchange_block_views = Array{Array{CuArray}}(undef, num_devices)
+        scf_data.gpu_data.K_fock_views = Array{Array{SubArray}}(undef, num_devices)
+
         Threads.@threads for device_id in 1:num_devices
             CUDA.device!(device_id-1)
 
@@ -144,6 +157,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_data.gpu_data.device_non_zero_coefficients[device_id] = CUDA.zeros(Float64, n_ooc, p, p)
             scf_data.gpu_data.device_exchange_intermediate[device_id] =  CUDA.zeros(Float64, (Q, n_ooc, p))
             scf_data.lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)#should only be done on first iteration 
+            println("lower triangle length: ", scf_data.lower_triangle_length)
             scf_data.gpu_data.device_K_block[device_id] = CUDA.zeros(Float64, (scf_data.screening_data.K_block_width, scf_data.screening_data.K_block_width, scf_data.lower_triangle_length))
             
             ################   duplicated logic! move this to a shared place   ##########################
@@ -165,7 +179,46 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_data.gpu_data.W_pointers_B[device_id] = Array{CuPtr{Float64}}(undef, scf_data.μ)
             scf_data.gpu_data.W_pointers_non_zero_coeff[device_id] = Array{CuPtr{Float64}}(undef, scf_data.μ)
             scf_data.gpu_data.W_pointers_W[device_id] = Array{CuPtr{Float64}}(undef, scf_data.μ)
-          
+
+            scf_data.gpu_data.K_pointers_A[device_id] = Array{CuPtr{Float64}}(undef, scf_data.lower_triangle_length)
+            scf_data.gpu_data.K_pointers_B[device_id] = Array{CuPtr{Float64}}(undef, scf_data.lower_triangle_length)
+            scf_data.gpu_data.K_pointers_C[device_id] = Array{CuPtr{Float64}}(undef, scf_data.lower_triangle_length)
+
+            scf_data.gpu_data.K_fock_views[device_id] = Array{SubArray}(undef, scf_data.lower_triangle_length)
+            scf_data.gpu_data.K_exchange_block_views[device_id] = Array{CuArray{Float64}}(undef, scf_data.lower_triangle_length)
+
+            if device_id == 1
+                scf_data.gpu_data.K_ranges_p = Array{StepRange{Int64, Int64}}(undef, scf_data.lower_triangle_length)
+                scf_data.gpu_data.K_ranges_q = Array{StepRange{Int64, Int64}}(undef, scf_data.lower_triangle_length)
+            end 
+
+            K_block_width  = scf_data.screening_data.K_block_width
+            for index in 1:scf_data.lower_triangle_length
+    
+                pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
+                p_range = (pp-1)*K_block_width+1:pp*K_block_width        
+                q_range = (qq-1)*K_block_width+1:qq*K_block_width
+
+                if device_id == 1
+                    scf_data.gpu_data.K_ranges_p[index] = p_range
+                    scf_data.gpu_data.K_ranges_q[index] = q_range
+                end
+
+                #GEMM C = A*B pointers 
+                scf_data.gpu_data.K_pointers_A[device_id][index] = pointer(
+                    view(scf_data.gpu_data.device_exchange_intermediate[device_id], :,:, p_range))
+                scf_data.gpu_data.K_pointers_B[device_id][index] = 
+                    pointer(view(scf_data.gpu_data.device_exchange_intermediate[device_id], :,:, q_range))
+                scf_data.gpu_data.K_pointers_C[device_id][index] = 
+                    pointer(view(scf_data.gpu_data.device_K_block[device_id], :,:, index))
+
+                scf_data.gpu_data.K_fock_views[device_id][index] = 
+                    view(scf_data.gpu_data.host_fock[device_id], p_range, q_range)
+                scf_data.gpu_data.K_exchange_block_views[device_id][index] =
+                    view(scf_data.gpu_data.device_K_block[device_id], :,:, index)
+                
+            end
+            
 
             #get a list of tuples from the indices of scf_data.screening_data.non_screened_p_indices_count index and value 
             key_value_pairs = [(k, v) for (k, v) in enumerate(scf_data.screening_data.non_screened_p_indices_count)]
@@ -208,7 +261,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
           
         end 
         
-        gpu_screening_setup = @elapsed setup_gpu_screening_data!(scf_data, num_devices)
+        gpu_screening_setup = @elapsed setup_gpu_screening_data!(scf_data, scf_options, num_devices)
 
 
         jc_timing.non_timing_data[JCTC.contraction_algorithm] = "screened gpu"
@@ -263,8 +316,11 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                         K_times[device_id]  = @elapsed calculate_K_upper_diagonal_rectangle_blocks(fock, W, Q_length, device_id,
                         scf_data, scf_options, threads_per_device)
                     elseif scf_options.df_exchange_n_blocks > 1 
-                        K_times[device_id]  = @elapsed calculate_K_lower_diagonal_block_no_screen_GPU(host_fock, fock, W, Q_length, device_id,
+                        @time K_times[device_id]  = @elapsed calculate_K_lower_diagonal_block_no_screen_GPU(host_fock, fock, W, Q_length, device_id,
                         scf_data, scf_options, scf_data.lower_triangle_length, threads_per_device)       
+
+                        # @time K_times[device_id]  = @elapsed calculate_K_lower_diagonal_block_no_screen_GPU_old(host_fock, fock, W, Q_length, device_id,
+                        # scf_data, scf_options, scf_data.lower_triangle_length, threads_per_device)       
                     else
                         K_times[device_id]  = @elapsed calcululate_K_no_sym_GPU!(fock, W, p, scf_data.occ, Q_length, device_id)
                     end
@@ -338,12 +394,6 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
     jc_timing.timings[JCTiming_key(JCTC.fock_gpu_cpu_copy_reduce_time, iteration)] = fock_copy_time
     jc_timing.timings[JCTiming_key(JCTC.total_fock_gpu_time, iteration)] = total_fock_gpu_time
-
-    println("max W time = ", maximum(W_times))
-    println("max K time = ", maximum(K_times))
-    println("total fock time = ", total_fock_gpu_time + fock_copy_time)
-    # gc_time = @elapsed GC.gc()
-    # println("gc time = ", gc_time)
 end
 
 
@@ -387,7 +437,7 @@ function form_screened_density!(scf_data::SCFData, device_id::Int64)
 
 end
 
-function setup_gpu_screening_data!(scf_data::SCFData, num_devices::Int64)
+function setup_gpu_screening_data!(scf_data::SCFData, scf_options, num_devices::Int64)
     n_ranges = 0
     p = scf_data.μ
     n_ranges_arr = zeros(Int64, p)
@@ -460,6 +510,8 @@ function setup_gpu_screening_data!(scf_data::SCFData, num_devices::Int64)
             CUDA.synchronize()
         end 
     end
+    
+    
 end
 
 function create_sparse_to_p_q_kernel(sparse_to_p::CuDeviceArray{Int64}, 
@@ -628,13 +680,42 @@ function calculate_W_screened_GPU(device_id, scf_data::SCFData, num_threads ::In
 
 end
 
+function pointer_gemm_batched!(
+    transA::Char,
+    transB::Char,
+    m::Int64, n::Int64, k::Int64, 
+    alpha,
+    A::Vector{CuPtr{Float64}}, lda::Int64,
+    B::Vector{CuPtr{Float64}}, ldb::Int64,
+    beta, C::Vector{CuPtr{Float64}}, ldc::Int64, batch_size::Int64)
+
+    @time begin
+        Aptrs = CuArray(A)
+        Bptrs = CuArray(B)
+        Cptrs = CuArray(C)
+        hndle = CUDA.CUBLAS.handle()
+    end
+    if CUBLAS.version() >= v"12.0"
+        @time CUDA.CUBLAS.cublasDgemmBatched_64(hndle, transA, transB, m, n, k, alpha, Aptrs, lda, Bptrs,
+            ldb, beta, Cptrs, ldc, batch_size)
+    else
+        CUDA.CUBLAS.cublasDgemmBatched(hndle, transA, transB, m, n, k, alpha, Aptrs, lda, Bptrs,
+            ldb, beta, Cptrs, ldc, batch_size)
+    end
+    @time begin
+        CUDA.unsafe_free!(Aptrs)
+        CUDA.unsafe_free!(Bptrs)
+        CUDA.unsafe_free!(Cptrs)
+    end
+end
+
 function pointer_gemm_grouped_batched!(
     transA::Vector{CUDA.CUBLAS.cublasOperation_t},
     transB::Vector{CUDA.CUBLAS.cublasOperation_t},
-    alpha_array::Vector{Float64},
     m_array::Vector{Int64},
     n_array::Vector{Int64},
     k_array::Vector{Int64},
+    alpha_array::Vector{Float64},
     A::Vector{CuPtr{Float64}},
     lda_array::Vector{Int64},
     B::Vector{CuPtr{Float64}},
@@ -697,28 +778,12 @@ function calculate_W_screened_GPU_batched(device_id, scf_data::SCFData, num_thre
     k_array = scf_data.gpu_data.W_non_screened_p_indices_count[device_id]
 
     pointer_gemm_grouped_batched!(transa_array, transb_array, 
-    alpha_array, m_array, n_array, k_array,
-        scf_data.gpu_data.W_pointers_B[device_id], m_array, 
+        m_array, n_array, k_array,
+        alpha_array, scf_data.gpu_data.W_pointers_B[device_id], m_array, 
         scf_data.gpu_data.W_pointers_non_zero_coeff[device_id], n_array,
         beta_array, scf_data.gpu_data.W_pointers_W[device_id], m_array, 
         group_count, scf_data.gpu_data.W_group_sizes[device_id])   
     CUDA.synchronize()
-
-    # transA::Vector{CUDA.CUBLAS.cublasOperation_t},
-    # transB::Vector{CUDA.CUBLAS.cublasOperation_t},
-    # alpha_array::Vector{Float64},
-    # m_array::Vector{Int64},
-    # n_array::Vector{Int64},
-    # k_array::Vector{Int64},
-    # A::Vector{CuPtr{Float64}},
-    # lda_array::Vector{Int64},
-    # B::Vector{CuPtr{Float64}},
-    # ldb_array::Vector{Int64},
-    # beta_array::Vector{Float64},
-    # C::Vector{CuPtr{Float64}},
-    # ldc_array::Vector{Int64},
-    # group_count::Int64,
-    # group_size::Vector{Int64})
 
 end
 
@@ -811,74 +876,137 @@ function calculate_K_upper_diagonal_rectangle_blocks(fock::CuArray{Float64,2}, W
 end
 
 
+
 function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64,2},
-     fock::CuArray{Float64,2}, W::CuArray{Float64,3}, Q_length::Int, 
-     device_id, scf_data::SCFData, scf_options::SCFOptions,
-     lower_triangle_length :: Int64, num_threads_avail::Int64)
+    fock::CuArray{Float64,2}, W::CuArray{Float64,3}, Q_length::Int, 
+    device_id, scf_data::SCFData, scf_options::SCFOptions,
+    lower_triangle_length :: Int64, num_threads_avail::Int64)
 
-    CUDA.device!(device_id-1)
+   CUDA.device!(device_id-1)
 
-    n_ooc = scf_data.occ
-    p = scf_data.μ
-    Q = Q_length #device Q length
-    K_block_width = scf_data.screening_data.K_block_width
+   n_ooc = scf_data.occ
+   p = scf_data.μ
+   Q = Q_length #device Q length
+   K_block_width = scf_data.screening_data.K_block_width
 
-    transA = 'T'
-    transB = 'N'
-    alpha = -1.0
-    beta = 0.0
+   transA = 'T'
+   transB = 'N'
+   alpha = -1.0
+   beta = 0.0
 
-    M = K_block_width
-    N = K_block_width
-    K = Q * n_ooc
+   M = K_block_width
+   N = K_block_width
+   K = Q * n_ooc
 
+   device_K_block = scf_data.gpu_data.device_K_block[device_id]
 
-
-    device_K_block = scf_data.gpu_data.device_K_block[device_id]
-
-    # no streams if the system is large enough to use this method the GEMM should saturate GPU
-    CUDA.device!(device_id-1)
-    pp, qq = scf_data.screening_data.exchange_batch_indexes[1]
-    p_range = 1:2
-    q_range = 1:2
-    A = reshape(view(W, :,:, p_range), (K, 2))
-    B = reshape(view(W, :,:, q_range), (K, 2))
+    # @time begin 
+        pointer_gemm_batched!('T', 'N',
+        M,N,K,
+        -1.0, scf_data.gpu_data.K_pointers_A[device_id], K, 
+        scf_data.gpu_data.K_pointers_B[device_id], K,
+        0.0, scf_data.gpu_data.K_pointers_C[device_id], M, lower_triangle_length)
+        CUDA.synchronize()
+    # end
+    # @time begin
     for index in 1:lower_triangle_length
-        exchange_block = view(device_K_block, :,:, index)
-
+        exchange_block = view(scf_data.gpu_data.device_K_block[device_id], :, :, index)
         pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
         p_range = (pp-1)*K_block_width+1:pp*K_block_width        
         q_range = (qq-1)*K_block_width+1:qq*K_block_width
-
-        A = reshape(view(W, :,:, p_range), (K, K_block_width))
-        B = reshape(view(W, :,:, q_range), (K, K_block_width))
-
-        CUDA.CUBLAS.gemm!(transA, transB, alpha, A, B, beta, exchange_block)
-        CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
+        
+        # CUDA.copyto!(scf_data.gpu_data.K_fock_views[device_id][index], 
+        #     CUDA.unsafe_wrap(CuArray, scf_data.gpu_data.K_pointers_C[device_id][index], arr_size)) #copy to host fock
+    
         #copy transpose 
+        CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
         CUDA.copyto!(view(fock, q_range, p_range), transpose(exchange_block))
     end
-    CUDA.synchronize()
+    # end
     if p % scf_options.df_exchange_n_blocks != 0 # if square blocks don't cover the entire pq space
-        col_non_square_range = 1:p    
-        #non square part that didn't fit in blocks
-        row_non_square_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
-        
-        M = length(row_non_square_range)
-        N = p
-        
-        A_non_square = reshape(view(W, :,:, row_non_square_range), (K, M))
-        B_non_square = reshape(view(W, :,:, col_non_square_range), (K, N))
-        C_non_square = scf_data.gpu_data.device_non_square_K_block[device_id]
-        
-    
-        CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
+       col_non_square_range = 1:p    
+       #non square part that didn't fit in blocks
+       row_non_square_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
+       
+       M = length(row_non_square_range)
+       N = p
+       
+       A_non_square = reshape(view(W, :,:, row_non_square_range), (K, M))
+       B_non_square = reshape(view(W, :,:, col_non_square_range), (K, N))
+       C_non_square = scf_data.gpu_data.device_non_square_K_block[device_id]
+       
+   
+       CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
+       CUDA.synchronize()
 
-        CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
-        #copy transpose
-        CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
-        CUDA.synchronize()
-    end 
+       CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
+       #copy transpose
+       CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
+   end 
+end
+
+
+
+function calculate_K_lower_diagonal_block_no_screen_GPU_old(host_fock::Array{Float64,2},
+    fock::CuArray{Float64,2}, W::CuArray{Float64,3}, Q_length::Int, 
+    device_id, scf_data::SCFData, scf_options::SCFOptions,
+    lower_triangle_length :: Int64, num_threads_avail::Int64)
+
+   CUDA.device!(device_id-1)
+
+   n_ooc = scf_data.occ
+   p = scf_data.μ
+   Q = Q_length #device Q length
+   K_block_width = scf_data.screening_data.K_block_width
+
+   transA = 'T'
+   transB = 'N'
+   alpha = -1.0
+   beta = 0.0
+
+   M = K_block_width
+   N = K_block_width
+   K = Q * n_ooc
+
+   device_K_block = scf_data.gpu_data.device_K_block[device_id]
+
+   for index in 1:lower_triangle_length
+       exchange_block = view(device_K_block, :,:, index)
+
+       pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
+       p_range = (pp-1)*K_block_width+1:pp*K_block_width        
+       q_range = (qq-1)*K_block_width+1:qq*K_block_width
+
+       A = reshape(view(W, :,:, p_range), (K, K_block_width))
+       B = reshape(view(W, :,:, q_range), (K, K_block_width))
+
+       CUDA.CUBLAS.gemm!(transA, transB, alpha, A, B, beta, exchange_block)
+       CUDA.synchronize()
+
+       CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
+       #copy transpose 
+       CUDA.copyto!(view(fock, q_range, p_range), transpose(exchange_block))
+   end
+   if p % scf_options.df_exchange_n_blocks != 0 # if square blocks don't cover the entire pq space
+       col_non_square_range = 1:p    
+       #non square part that didn't fit in blocks
+       row_non_square_range = p-(p%scf_options.df_exchange_n_blocks)+1:p
+       
+       M = length(row_non_square_range)
+       N = p
+       
+       A_non_square = reshape(view(W, :,:, row_non_square_range), (K, M))
+       B_non_square = reshape(view(W, :,:, col_non_square_range), (K, N))
+       C_non_square = scf_data.gpu_data.device_non_square_K_block[device_id]
+       
+   
+       CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
+       CUDA.synchronize()
+
+       CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
+       #copy transpose
+       CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
+   end 
 end
 
 function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
