@@ -38,25 +38,15 @@ mutable struct SCFGPUData_cuda <: SCFGPUData
     W_group_sizes::Array{Array{Int,1},1}
     W_group_count::Array{Int,1}
     W_non_screened_p_indices_count::Array{Array{Int,1},1}
-
-    K_pointers_A::Array{Array{CuPtr{Float64},1},1}
-    K_pointers_B::Array{Array{CuPtr{Float64},1},1}
-    K_pointers_C::Array{Array{CuPtr{Float64},1},1}
-
-    K_ranges_p::Array{StepRange{Int64, Int64}}
-    K_ranges_q::Array{StepRange{Int64, Int64}}
-
-    K_exchange_block_views::Array{Array{CuArray{Float64}}}
-    K_fock_views::Array{Array{SubArray}}
 end
 
 function get_default_gpu_data_cuda() :: SCFGPUData_cuda
     return SCFGPUData_cuda([], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [], [], [], [],
         [], [], [], [], [], [],
-        CuArray{Float64}(undef, 0), [], 0, 0, [], [],[],[],[], [], [] ,
-        [],[],[], # K_pointersA, K_pointersB, K_pointersC
-        [],[],[],[])
+        CuArray{Float64}(undef, 0), [], 0, 0, [], 
+        [],[],[],[], [], [] # W pointers for grouped batched gemm
+        )
 
 end
 
@@ -94,15 +84,6 @@ function initialize!(gpu_data::SCFGPUData_cuda, num_devices::Int64)
     gpu_data.W_group_count = Array{Int64,1}(undef, num_devices)
     gpu_data.W_non_screened_p_indices_count = Array{Array{Int64,1}}(undef, num_devices)
 
-    gpu_data.K_pointers_A = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
-    gpu_data.K_pointers_B = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
-    gpu_data.K_pointers_C = Array{Array{CuPtr{Float64},1}}(undef, num_devices)
-
-    gpu_data.K_ranges_p = Array{StepRange{Int64, Int64}}(undef, num_devices)    
-    gpu_data.K_ranges_q = Array{StepRange{Int64, Int64}}(undef, num_devices)
-
-    gpu_data.K_exchange_block_views = Array{Array{CuArray}}()
-    gpu_data.K_fock_views = Array{Array{SubArray}}()
 
 end
 
