@@ -40,23 +40,8 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
         end
 
         two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
-        screening_time = @elapsed begin
-            get_screening_metadata!(scf_data, scf_options.df_screening_sigma, jeri_engine_thread, two_center_integrals, basis_sets, jc_timing)
-            calculate_exchange_block_screen_matrix(scf_data, scf_options, 
-            SCF_Keywords.Screening.df_exchange_n_blocks_gpu_default,
-            jc_timing)
-        end
         
-        three_eri_time = @elapsed begin
-            for device_id in 1:num_devices #the method being called uses many threads do not need to thread by device
-                global_device_id = device_id + (rank)*num_devices
-                three_center_integrals[device_id] = calculate_three_center_integrals(jeri_engine_thread_df,
-                     basis_sets, scf_options, scf_data, global_device_id-1,num_devices_global, true)
-            end
-        end
-
-        calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
-       
+        
         if scf_options.df_use_adaptive && scf_options.df_exchange_n_blocks == 0
             QQ = maximum(scf_data.gpu_data.device_Q_range_lengths)
 
@@ -77,7 +62,24 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_options.df_exchange_n_blocks = 2
         end
 
-        println("number of blocks: ", scf_options.df_exchange_n_blocks)
+        screening_time = @elapsed begin
+            get_screening_metadata!(scf_data, scf_options.df_screening_sigma, jeri_engine_thread, two_center_integrals, basis_sets, jc_timing)
+            calculate_exchange_block_screen_matrix(scf_data, scf_options, 
+            scf_options.df_exchange_n_blocks,
+            jc_timing)
+        end
+        
+        three_eri_time = @elapsed begin
+            for device_id in 1:num_devices #the method being called uses many threads do not need to thread by device
+                global_device_id = device_id + (rank)*num_devices
+                three_center_integrals[device_id] = calculate_three_center_integrals(jeri_engine_thread_df,
+                     basis_sets, scf_options, scf_data, global_device_id-1,num_devices_global, true)
+            end
+        end
+
+        calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
+       
+
 
         scf_data.screening_data.K_block_width = p÷scf_options.df_exchange_n_blocks
 
@@ -147,7 +149,6 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
             scf_data.gpu_data.device_non_zero_coefficients[device_id] = CUDA.zeros(Float64, n_ooc, p, p)
             scf_data.gpu_data.device_exchange_intermediate[device_id] =  CUDA.zeros(Float64, (Q, n_ooc, p))
             scf_data.lower_triangle_length = get_triangle_matrix_length(scf_options.df_exchange_n_blocks)#should only be done on first iteration 
-            println("lower triangle length: ", scf_data.lower_triangle_length)
             scf_data.gpu_data.device_K_block[device_id] = CUDA.zeros(Float64, (scf_data.screening_data.K_block_width, scf_data.screening_data.K_block_width, scf_data.lower_triangle_length))
             
             ################   duplicated logic! move this to a shared place   ##########################
@@ -263,6 +264,10 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
                     non_zero_coeff_times[device_id] = @elapsed form_nozero_coefficient_matrix!(scf_data, device_id)
                     W_times[device_id]  = @elapsed calculate_W_screened_GPU_batched(device_id, scf_data, threads_per_device)
+
+                    # W_cpu = Array(scf_data.gpu_data.device_exchange_intermediate[device_id])
+                    # # display(W_cpu[1:10, 1:10])
+
                     if use_K_rect 
                         K_times[device_id]  = @elapsed calculate_K_upper_diagonal_rectangle_blocks(fock, W, Q_length, device_id,
                         scf_data, scf_options, threads_per_device)
@@ -272,6 +277,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     else
                         K_times[device_id]  = @elapsed calcululate_K_no_sym_GPU!(fock, W, p, scf_data.occ, Q_length, device_id)
                     end
+
                     if rank == 0 && device_id == 1
                         H_add_time = @elapsed begin
                             CUDA.axpy!(1.0, scf_data.gpu_data.device_H, fock)
@@ -628,6 +634,7 @@ function pointer_gemm_grouped_batched!(
     CUDA.unsafe_free!(Cptrs)
     CUDA.unsafe_free!(Bptrs)
     CUDA.unsafe_free!(Aptrs)
+    CUDA.synchronize()
     
 end
 
@@ -777,7 +784,6 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
    K = Q * n_ooc
 
    device_K_block = scf_data.gpu_data.device_K_block[device_id]
-
    for index in 1:lower_triangle_length
        exchange_block = view(device_K_block, :,:, index)
 
