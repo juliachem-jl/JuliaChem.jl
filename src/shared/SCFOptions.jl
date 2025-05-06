@@ -26,6 +26,7 @@ mutable struct SCFOptions
 end 
 
 function create_default_scf_options()
+    println("using default SCF options")
     return SCFOptions(
         false, # density_fitting
         SCF_Keywords.ContractionMode.default,
@@ -93,6 +94,8 @@ function create_scf_options(scf_flags)
     df_exchange_n_blocks::Int = haskey(scf_flags, Screening.df_exchange_n_blocks) ? 
         scf_flags[Screening.df_exchange_n_blocks] : Screening.df_exchange_n_blocks_default 
 
+    println("scf_flags[Screening.df_exchange_n_blocks]: ", scf_flags[Screening.df_exchange_n_blocks])
+    println("df_exchange_n_blocks: ", df_exchange_n_blocks)
     df_screening_sigma::Float64 = haskey(scf_flags, Screening.df_sigma) ? 
         scf_flags[Screening.df_sigma] : Screening.df_sigma_default
 

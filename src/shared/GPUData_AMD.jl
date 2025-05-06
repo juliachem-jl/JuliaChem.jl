@@ -11,11 +11,11 @@ function get_default_gpu_data_AMD(num_devices) :: SCFGPUData_generic
 
     gpu_data = SCFGPUData_generic{ROCArray{Float64}, ROCArray{Int64}}(
         [], [], [], [], [], 
-        [], [], [], [], [], 
+        [], [], [], [], [], [],
         [], [], [], [], [],
         [], [], [], [] ,[],
         [], [], [], [], [],
-        [], 0, 0, [], AMD_GPU())
+        0, 0, [], AMD_GPU())
     initialize_generic!(RocAF64, RocAI64, gpu_data, num_devices, AMD_GPU())
     return gpu_data
 end
@@ -45,13 +45,15 @@ end
 
 function GPU_trtri!(gpu_type::AMD_GPU, uplo::Char, diag::Char, A::ROCArray{Float64})
     LinearAlgebra.LAPACK.chkuplo(uplo)
-    n = LinearAlgebra.LAPACK.checksquare(A)
-    lda = max(1, stride(A, 2))            
+    n = size(A, 1)
+    lda = size(A, 1)
     devinfo = ROCVector{Cint}(undef, 1)
-
     AMDGPU.rocSOLVER.rocsolver_dtrtri(rocBLAS.handle(), uplo, diag, n, A, lda, devinfo)
+    GPU_synchronize(gpu_type)
 
+    # println("devinfo: ", devinfo[1])
     info = AMDGPU.@allowscalar devinfo[1]
+    println("info: ", info)
     AMDGPU.unsafe_free!(devinfo)
     LinearAlgebra.LAPACK.chkargsok(LinearAlgebra.BlasInt(info))
 end

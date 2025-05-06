@@ -17,7 +17,7 @@ mutable struct SCFGPUData_generic{F_ARR, I_ARR} <: SCFGPUData
     device_density::Array{F_ARR,1}
     device_screened_density::Array{F_ARR,1}
     device_non_zero_coefficients::Array{F_ARR,1}
-    device_K_block#::Array{F_ARR,1}
+    device_K_block::Array{F_ARR,1}
     device_non_square_K_block::Array{F_ARR,1}
     host_fock::Array{Array{Float64,2},1}
     device_H::F_ARR #only copied to rank 0 GPU 1 because it only needs to be added to one of the partial fock matricies 
