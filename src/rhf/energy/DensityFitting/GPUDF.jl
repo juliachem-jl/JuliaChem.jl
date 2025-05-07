@@ -41,13 +41,20 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
 
         two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
         
-        
+        device_Q_indices, 
+        device_rank_Q_indices, 
+        device_Q_range_lengths, 
+        max_device_Q_range_length  = calculate_device_ranges_GPU(scf_data, num_devices, n_ranks, basis_sets)
+    
+        scf_data.gpu_data.device_Q_range_lengths = device_Q_range_lengths
+        scf_data.gpu_data.device_Q_indices = device_Q_indices
+
         if scf_options.df_use_adaptive && scf_options.df_exchange_n_blocks == 0
             QQ = maximum(scf_data.gpu_data.device_Q_range_lengths)
 
             block_size_deterimined = false
             scf_options.df_exchange_n_blocks = 1
-            while !block_size_deterimined && df_exchange_n_blocks < scf_options.df_max_num_GPU_exchange_blocks
+            while !block_size_deterimined && scf_options.df_exchange_n_blocks < scf_options.df_max_num_GPU_exchange_blocks
                 number_of_operations = 2*QQ*n_ooc*(p÷scf_options.df_exchange_n_blocks)^2 
                 # println("number of operations per block = ", number_of_operations)
                 if number_of_operations > Int64(scf_options.df_GPU_K_block_opeartions_threshold)
@@ -76,6 +83,7 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                      basis_sets, scf_options, scf_data, global_device_id-1,num_devices_global, true)
             end
         end
+        
 
         calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
        
@@ -269,8 +277,8 @@ function df_rhf_fock_build_GPU!(scf_data, jeri_engine_thread_df::Vector{T}, jeri
                     # # display(W_cpu[1:10, 1:10])
 
                     if use_K_rect 
-                        K_times[device_id]  = @elapsed calculate_K_upper_diagonal_rectangle_blocks(fock, W, Q_length, device_id,
-                        scf_data, scf_options, threads_per_device)
+                        # K_times[device_id]  = @elapsed calculate_K_upper_diagonal_rectangle_blocks(fock, W, Q_length, device_id,
+                        # scf_data, scf_options, threads_per_device)
                     elseif scf_options.df_exchange_n_blocks > 1 
                         K_times[device_id]  = @elapsed calculate_K_lower_diagonal_block_no_screen_GPU(host_fock, fock, W, Q_length, device_id,
                         scf_data, scf_options, scf_data.lower_triangle_length, threads_per_device)       
@@ -795,12 +803,13 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
        B = reshape(view(W, :,:, q_range), (K, K_block_width))
 
        CUDA.CUBLAS.gemm!(transA, transB, alpha, A, B, beta, exchange_block)
-       CUDA.synchronize()
+       
 
        CUDA.copyto!(view(fock, p_range, q_range), exchange_block)
        #copy transpose 
        CUDA.copyto!(view(fock, q_range, p_range), transpose(exchange_block))
    end
+   
    if p % scf_options.df_exchange_n_blocks != 0 # if square blocks don't cover the entire pq space
        col_non_square_range = 1:p    
        #non square part that didn't fit in blocks
@@ -815,12 +824,12 @@ function calculate_K_lower_diagonal_block_no_screen_GPU(host_fock::Array{Float64
        
    
        CUDA.CUBLAS.gemm!(transA, transB, alpha, A_non_square, B_non_square, beta, C_non_square) #W^T[M, Q*n_ooc] * W[Q*n_ooc, N] = C_non_square[M, N]
-       CUDA.synchronize()
 
        CUDA.copyto!(view(fock, row_non_square_range,:), C_non_square)  #non contiguous memory access on the GPU bad, should use the other triangle side
        #copy transpose
        CUDA.copyto!(view(fock, :, row_non_square_range), transpose(C_non_square))
    end 
+   CUDA.synchronize()
 end
 
 function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data, num_devices, num_devices_global, basis_sets, jc_timing)
@@ -835,15 +844,10 @@ function calculate_B_GPU!(two_center_integrals, three_center_integrals, scf_data
     device_B_send_buffers = Array{CuArray{Float64}}(undef, num_devices)
 
     device_B = scf_data.gpu_data.device_B
-
-
-    device_Q_indices, 
-    device_rank_Q_indices, 
-    device_Q_range_lengths, 
-    max_device_Q_range_length  = calculate_device_ranges_GPU(scf_data, num_devices, n_ranks, basis_sets)
-
-    scf_data.gpu_data.device_Q_range_lengths = device_Q_range_lengths
-    scf_data.gpu_data.device_Q_indices = device_Q_indices
+ 
+    device_Q_range_lengths = scf_data.gpu_data.device_Q_range_lengths
+    device_Q_indices = scf_data.gpu_data.device_Q_indices
+   
 
     device_id_offset = rank * num_devices
     
