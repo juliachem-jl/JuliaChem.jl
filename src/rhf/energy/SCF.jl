@@ -460,7 +460,7 @@ function scf_cycles_kernel(F::Matrix{Float64}, D::Matrix{Float64},
       jc_timing.timings[JCTiming_key(JCTC.fock_time,iter)] = fock_build_end_time - fock_build_start_time 
     else
       MPI.Bcast!(C, 0, comm)
-      fock_build_time = @elapsed F = df_rhf_fock_build!(scf_data, jeri_engine_thread_df, jeri_engine_thread, basis_sets, C, iter, scf_options, H, jc_timing)
+      fock_build_time = @elapsed F .= df_rhf_fock_build!(scf_data, jeri_engine_thread_df, jeri_engine_thread, basis_sets, C, iter, scf_options, H, jc_timing)
       jc_timing.timings[JCTiming_key(JCTC.fock_time,iter)] = fock_build_time
     end
     
