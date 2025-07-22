@@ -198,9 +198,7 @@ function calculate_coulomb!(scf_data, occupied_orbital_coefficients, indicies, j
   BLAS_threads = Base.Threads.nthreads()
 
   blas_threads = BLAS.get_num_threads()
-  if scf_data.μ < 200 
-      BLAS.set_num_threads(1)
-  end
+  BLAS.set_num_threads(1)
   density_time = @elapsed BLAS.gemm!('N', 'T', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, density)
   BLAS.set_num_threads(BLAS_threads)
 

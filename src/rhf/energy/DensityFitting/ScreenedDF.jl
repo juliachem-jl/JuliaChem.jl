@@ -300,9 +300,7 @@ end
 function calculate_coulomb_screened(scf_data, occupied_orbital_coefficients, jc_timing::JCTiming, iteration)
     density_time = @elapsed begin 
         blas_threads = BLAS.get_num_threads()
-        if scf_data.μ < 1000 
-            BLAS.set_num_threads(1)
-        end
+        BLAS.set_num_threads(1)
         BLAS.gemm!('T', 'N', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, scf_data.density)
         copy_screened_density_to_array(scf_data)
         BLAS.set_num_threads(blas_threads)
@@ -633,42 +631,47 @@ function calculate_K_lower_diagonal_block_no_screen(scf_data, scf_options, jc_ti
     # println("use_non_square_blocks = $use_non_square_blocks")
     # println("scf_data.screening_data.exchange_batch_indexes")
     # println(scf_data.screening_data.exchange_batch_indexes)
-    Threads.@threads for index in lower_triangle_length:-1:1 
-        pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
+    Threads.@sync for thread in 1:n_threads
+        Threads.@spawn begin        
+            thread_block_range = (thread - 1) * lower_triangle_length ÷ Threads.nthreads() + 1:thread * lower_triangle_length ÷ Threads.nthreads()
+            for index in thread_block_range
+                pp, qq = scf_data.screening_data.exchange_batch_indexes[index]
 
-        p_start = (pp - 1) * K_block_width + 1
-        p_range = p_start:pp*K_block_width
-        if p_range[end] == k_block_p_limit
-            p_range = p_start:p
-        end
-        
-        q_start = (qq - 1) * K_block_width + 1
-        q_range = q_start:qq*K_block_width
-        if q_range[end] == k_block_q_limit
-            q_range = q_start:p
-        end
+                p_start = (pp - 1) * K_block_width + 1
+                p_range = p_start:pp*K_block_width
+                if p_range[end] == k_block_p_limit
+                    p_range = p_start:p
+                end
+                
+                q_start = (qq - 1) * K_block_width + 1
+                q_range = q_start:qq*K_block_width
+                if q_range[end] == k_block_q_limit
+                    q_range = q_start:p
+                end
 
-        A_ptr = pointer(W, linear_indices[1, 1, p_start])
-        B_ptr = pointer(W, linear_indices[1, 1, q_start])
+                A_ptr = pointer(W, linear_indices[1, 1, p_start])
+                B_ptr = pointer(W, linear_indices[1, 1, q_start])
 
-        if p_range[end] == p && q_range[end] == p && use_non_square_blocks #bottom corner block
-            C_ptr = pointer(scf_data.bottom_corner_k_block, 1)
-            call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
-            scf_data.two_electron_fock[p_range, q_range] .= scf_data.bottom_corner_k_block
-        elseif (p_range[end] == p || q_range[end] == p) && use_non_square_blocks #non square block
-            C_ptr = pointer(scf_data.k_non_square_blocks, K_non_square_block_linear_indices[1,1, qq])
-            C_block = view(scf_data.k_non_square_blocks, :, :, qq)
-            call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
-            scf_data.two_electron_fock[p_range, q_range] .= C_block
-            if pp != qq
-                scf_data.two_electron_fock[q_range, p_range] .= transpose(C_block) 
-            end
-        else #square block (normal)
-            C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, index])
-            call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
-            scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, index)
-            if pp != qq
-                scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, index)) 
+                if p_range[end] == p && q_range[end] == p && use_non_square_blocks #bottom corner block
+                    C_ptr = pointer(scf_data.bottom_corner_k_block, 1)
+                    call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
+                    scf_data.two_electron_fock[p_range, q_range] .= scf_data.bottom_corner_k_block
+                elseif (p_range[end] == p || q_range[end] == p) && use_non_square_blocks #non square block
+                    C_ptr = pointer(scf_data.k_non_square_blocks, K_non_square_block_linear_indices[1,1, qq])
+                    C_block = view(scf_data.k_non_square_blocks, :, :, qq)
+                    call_gemm!(Val(transA), Val(transB), length(p_range), length(q_range), K, alpha, A_ptr, B_ptr, beta, C_ptr)
+                    scf_data.two_electron_fock[p_range, q_range] .= C_block
+                    if pp != qq
+                        scf_data.two_electron_fock[q_range, p_range] .= transpose(C_block) 
+                    end
+                else #square block (normal)
+                    C_ptr = pointer(exchange_blocks, K_linear_indices[1, 1, index])
+                    call_gemm!(Val(transA), Val(transB), M, N, K, alpha, A_ptr, B_ptr, beta, C_ptr)
+                    scf_data.two_electron_fock[p_range, q_range] .= view(exchange_blocks, :,:, index)
+                    if pp != qq
+                        scf_data.two_electron_fock[q_range, p_range] .= transpose(view(exchange_blocks, :,:, index)) 
+                    end
+                end
             end
         end
     end#sync
