@@ -104,10 +104,10 @@ function rhf_kernel(mol::Molecule,
   jc_timing.timings[JCTC.H_time] = T_time + V_time + H_time
  
   #== build the initial matrices with guesss ==#
+  F = zeros(size(H))
   if scf_options.guess == Guess.sad
     guess_matrix = sad_guess(mol, basis)
     D = guess_matrix
-    F = zeros(size(H))
   elseif scf_options.guess == Guess.hcore || scf_options.guess == Guess.density_fitting
     guess_matrix = deepcopy(H)
     F = guess_matrix
@@ -157,9 +157,10 @@ function rhf_kernel(mol::Molecule,
   #LinearAlgebra.BLAS.gemm!('N', 'N', 1.0, workspace_a, ortho, 0.0, ortho) 
  
   #== build the orthogonalization matrix ==#
-  @views ortho = workspace_a[1:end,S_good_evals]*
-    (LinearAlgebra.Diagonal(workspace_b[S_good_evals,S_good_evals])^-0.5)*
-    transpose(workspace_a[1:end, S_good_evals])
+  # @views ortho = workspace_a[1:end,S_good_evals]*
+  #   (LinearAlgebra.Diagonal(workspace_b[S_good_evals,S_good_evals])^-0.5)*
+  #   transpose(workspace_a[1:end, S_good_evals])
+  ortho = inv(sqrt(S))
   
   if debug && MPI.Comm_rank(comm) == 0
     h5write("debug.h5","RHF/Iteration-None/X", ortho)
@@ -175,9 +176,9 @@ function rhf_kernel(mol::Molecule,
 
   E_elec = 0.0
   F_eval = zeros(size(F)[1])
+  nocc = basis.nels >> 1
   if scf_options.guess == Guess.hcore || scf_options.guess == Guess.density_fitting
-    E_elec, F_eval[:] = iteration(F, D, C, H, F_eval, F_evec, workspace_a, 
-      workspace_b, ortho, basis_sets, 0, debug)
+    calculate_hcore_guess_density!(D, S, ortho, H, C, F_eval, F_evec, nocc)
   end
   
   F_old = deepcopy(F)
@@ -1077,36 +1078,6 @@ function iteration(F_μν::Matrix{Float64}, D::Matrix{Float64},
   basis = basis_sets.primary
   comm=MPI.COMM_WORLD
  
-  transpose!(workspace_b, LinearAlgebra.Hermitian(ortho)) 
-
-  #== obtain new orbital coefficients ==#
-  BLAS.symm!('L', 'U', 1.0, workspace_b, F_μν, 0.0, workspace_a)
-  BLAS.gemm!('N', 'N', 1.0, workspace_a, ortho, 0.0, workspace_b)
-
-  F_eval[:], F_evec[:,:] = eigen!(LinearAlgebra.Hermitian(workspace_b)) 
-  
-  #@views F_evec .= F_evec[:,sortperm(F_eval)] #sort evecs according to sorted evals
-
-  if debug && MPI.Comm_rank(comm) == 0
-    h5write("debug.h5","RHF/Iteration-$iter/F_evec", F_evec)
-  end
-
-  #C .= ortho*F_evec
-  BLAS.symm!('L', 'U', 1.0, ortho, F_evec, 0.0, C)
-  
-  if debug && MPI.Comm_rank(comm) == 0
-    h5write("debug.h5","RHF/Iteration-$iter/C", C)
-  end
-
-  #== build new density matrix ==#
-  nocc = basis.nels >> 1
-  norb = basis.norb
-
-  #fill!(D, 0.0)
-  for i in 1:basis.norb, j in 1:basis.norb
-    D[i,j] = 2.0*BLAS.dot(nocc,pointer(C,i),norb,pointer(C,j),norb)
-  end
- 
   #== compute new SCF energy ==#
   #EHF1 = LinearAlgebra.dot(D, F_μν)
   #EHF2 = LinearAlgebra.dot(D, H)
@@ -1121,6 +1092,32 @@ function iteration(F_μν::Matrix{Float64}, D::Matrix{Float64},
     h5write("debug.h5","RHF/Iteration-$iter/E/EHF", E_elec)
   end
 
+
+
+  
+  
+
+
+  
+  transpose!(workspace_b, LinearAlgebra.Hermitian(ortho)) 
+  #== obtain new orbital coefficients ==#
+  # F_p = ortho*F_μν*transpose(ortho)
+  # F_eval[:], F_evec[:,:] = eigen!(F_p) 
+  BLAS.symm!('L', 'U', 1.0, workspace_b, F_μν, 0.0, workspace_a)
+  BLAS.gemm!('N', 'N', 1.0, workspace_a, ortho, 0.0, workspace_b)
+  F_eval[:], F_evec[:,:] = eigen!(LinearAlgebra.Hermitian(workspace_b)) 
+
+  # C .= ortho*F_evec
+  BLAS.symm!('L', 'U', 1.0, ortho, F_evec, 0.0, C)
+  if debug && MPI.Comm_rank(comm) == 0
+    h5write("debug.h5","RHF/Iteration-$iter/C", C)
+  end
+
+  #== build new density matrix ==#
+  nocc = basis.nels >> 1
+  C_occ = view(C, :, 1:nocc)
+  LinearAlgebra.BLAS.gemm!('N', 'T', 2.0, C_occ, C_occ, 0.0, D)
+ 
   return E_elec, F_eval
 end
 

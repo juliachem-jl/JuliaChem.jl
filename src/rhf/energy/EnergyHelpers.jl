@@ -139,25 +139,59 @@ function compute_nah(V::Matrix{Float64}, mol::Molecule,
   end
 end
 
+# https://github.com/psi4/psi4numpy/blob/master/Tutorials/03_Hartree-Fock/3a_restricted-hartree-fock.ipynb
+# Hcore guess density matrix
+### function docs 
+"""
+    calculate_hcore_guess_density(D::Matrix{Float64},
+  S::Matrix{Float64}, A::Matrix{Float64}, H ::Matrix{Float64}, C ::Matrix{Float64}, nocc::Int64)
+
+  Calculates the guess density for the core hamiltonian guess.
+
+  # Arguments
+  - `D::Matrix{Float64}`: Density matrix to be filled.
+  - `S::Matrix{Float64}`: Overlap matrix. (S^-1/2)
+  - `A::Matrix{Float64}`: Orthogonalization matrix.
+  - `H::Matrix{Float64}`: One-electron Hamiltonian matrix.
+  - `C::Matrix{Float64}`: Orbital coefficient matrix.
+  - `F_eval::Vector{Float64}`: Fock matrix eigenvalues buffer
+  - `F_evec::Matrix{Float64}`: Fock matrix eigenvectors buffer
+  - `nocc::Int64`: Number of occupied orbitals.
+
+"""
+function calculate_hcore_guess_density!(D::Matrix{Float64},
+  S::Matrix{Float64}, A::Matrix{Float64}, H ::Matrix{Float64}, C ::Matrix{Float64}, 
+  F_eval::Vector{Float64}, F_evec::Matrix{Float64},
+  nocc::Int64)
+    F_p = A*H*transpose(A) # Transformed Fock Matrix
+    F_eval[:], F_evec[:,:] = eigen!(LinearAlgebra.Hermitian(F_p))
+    C .= A*F_evec # back transform eigenvectors to A.O. Basis
+    C_occ = view(C, :,1:nocc) # get occupied orbital coefficients
+    LinearAlgebra.BLAS.gemm!('N', 'T', 2.0, C_occ, C_occ, 0.0, D) # build density matrix
+  end
+
 function sad_guess(mol::Molecule, basis::Basis)
   basis_symbol = basis.model
 
   sad_guess = zeros(Float64, (basis.norb, basis.norb))
-  h5open(joinpath(@__DIR__, "../../../records/sadgss.h5"),"r") do sadgss 
+  # h5open(joinpath(@__DIR__, "../../../records/sadgss.h5"),"r") do sadgss 
+  # h5open("/global/cfs/cdirs/m4265/mixed_precision/JuliaChem.jl/records/cc-pvdz_sad_guess_test_pyscf.h5","r") do sadgss 
+  h5open("/global/cfs/cdirs/m4265/mixed_precision/JuliaChem.jl/records/6-31g_sad_guess_test.h5","r") do sadgss 
     anchor = 1
     for atom in mol
       atom_symbol = atom.symbol
      
-      sadgss_buf = read(sadgss["$atom_symbol/$basis_symbol"])
+      sadgss_buf = read(sadgss["$atom_symbol"])
       #println("$anchor, $atom")
       #display(sadgss_buf); println()
 
       sqrt_nbas_guess = trunc(Int,sqrt(length(sadgss_buf)))
-
+      # sqrt_nbas_guess = size(sadgss_buf,1)
       sadgss_idx = 1
       for i in anchor:(anchor+sqrt_nbas_guess-1) 
         for j in anchor:(anchor+sqrt_nbas_guess-1)
           sad_guess[i,j] = sadgss_buf[sadgss_idx]
+          # sad_guess[i,j] = sadgss_buf[i,j]
           sadgss_idx += 1 
         end  
       end
@@ -165,7 +199,7 @@ function sad_guess(mol::Molecule, basis::Basis)
     end  
   end
  
-  #display(sad_guess) 
+  # display(sad_guess) 
   return sad_guess  
 end
 
