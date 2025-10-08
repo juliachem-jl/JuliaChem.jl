@@ -52,6 +52,9 @@ LINK_DIRECTORIES( SYSTEM
 )
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
+# Set up proper library paths
+set(CMAKE_INSTALL_RPATH "${JLCXX_PATH}/lib;${LIBINT_PATH}/lib")
+
 message("-- Found Eigen at ${EIGEN_PATH}")
 message("-- Found Boost at ${BOOST_PATH}")
 message("-- Found JLCxx at ${JLCXX_PATH}")

@@ -8,19 +8,20 @@
 #include "./jeri-tei.hpp"
 #include "./jeri-df-tei.hpp"
 
-JLCXX_MODULE define_jeri(jlcxx::Module& mod) {
+extern "C" {
+  JLCXX_MODULE define_jeri(jlcxx::Module& mod) {
   // -- initialize/finalize functions --//
   mod.method("initialize", &initialize);
   mod.method("finalize", &finalize);
 
   // //-- shell information --//
-  mod.add_type<libint2::Shell>("Shell")
-    .method("create_shell", &create_shell);
+  mod.add_type<libint2::Shell>("Shell");
+  mod.method("create_shell", &create_shell);
   jlcxx::stl::apply_stl<libint2::Shell>(mod);
 
   // //-- atom information --//
-  mod.add_type<libint2::Atom>("Atom")
-    .method("create_atom", &create_atom);
+  mod.add_type<libint2::Atom>("Atom");
+  mod.method("create_atom", &create_atom);
   jlcxx::stl::apply_stl<libint2::Atom>(mod);
 
 
@@ -78,6 +79,6 @@ JLCXX_MODULE define_jeri(jlcxx::Module& mod) {
       .method("compute_eri_block_df", &DFRHFTEIEngine::compute_eri_block_df)
       .method("compute_two_center_eri_block", &DFRHFTEIEngine::compute_two_center_eri_block);
 
-    
+  }
 } 
 
