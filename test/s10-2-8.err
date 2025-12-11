@@ -1,0 +1,15 @@
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 394072.0 ON compute-2-0 CANCELLED AT 2023-04-12T10:56:45 ***
+slurmstepd: error: *** JOB 394072 ON compute-2-0 CANCELLED AT 2023-04-12T10:56:45 ***
+
+signal (15): Terminated
+in expression starting at /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl:75
+pthread_cond_wait at /lib64/libpthread.so.0 (unknown line)
+
+signal (15): Terminated
+in expression starting at none:4
+pthread_cond_wait at /lib64/libpthread.so.0 (unknown line)
+
+signal (15): Terminated
+in expression starting at /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl:75
+pthread_cond_wait at /lib64/libpthread.so.0 (unknown line)

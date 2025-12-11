@@ -8,4 +8,4 @@ if [ -d src/core/snoop ]; then
    rm -rf snoop
    rm snoop.csv
 fi
-JULIA_NUM_THREADS=1 julia tools/snoop.jl example_scripts/minimal-rhf.jl example_inputs/S22-01.json
+JULIA_NUM_THREADS=1 julia example_scripts/minimal-rhf.jl example_inputs/S22-01.json

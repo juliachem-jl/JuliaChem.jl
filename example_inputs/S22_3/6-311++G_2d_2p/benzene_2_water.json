@@ -42,13 +42,18 @@
   "driver": "energy",
   "model": {
     "method": "RHF",
-    "basis": "6-311++G(2d,2p)"
+    "basis": "6-31+G*"
   },
   "keywords": {
     "scf": {
       "guess":"hcore",
       "dele":1.0, 
       "rmsd":2.0E-5 
+    },
+    "prop":{
+      "mo energies":true,
+      "mulliken":true,
+      "multipole":"dipole"
     }
   }
 }

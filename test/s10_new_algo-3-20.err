@@ -1,0 +1,12 @@
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd: error: *** STEP 394304.0 ON compute-2-1 CANCELLED AT 2023-04-18T09:18:55 ***
+slurmstepd: error: *** JOB 394304 ON compute-2-1 CANCELLED AT 2023-04-18T09:18:55 ***
+
+signal (15): Terminated
+in expression starting at /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl:75
+
+signal (15): Terminated
+in expression starting at /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl:75
+
+signal (15): Terminated
+in expression starting at /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl:75

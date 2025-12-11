@@ -33,10 +33,11 @@ function run(mol::Molecule)
         println("                             MOLECULAR COORDINATE ANALYSIS               ")
         println("                       ========================================          ")
         println("")
+        print_xyz(mol) 
+
     end
 
     #== print coordinates ==#
-    print_xyz(mol) 
 
     #== compute bond lengths ==#
     #bond_lengths = analyze_bond_lengths(mol)

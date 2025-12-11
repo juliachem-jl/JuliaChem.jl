@@ -1,0 +1,29 @@
+{
+  "molecule": {
+    "geometry": [
+      -1.551007, -0.114520, 0.000000,
+      -1.934259, 0.762503, 0.000000,
+      -0.599677, 0.040712, 0.000000,
+      1.350625, 0.111469, 0.000000,
+      1.680398, -0.373741, -0.758561,
+      1.680398, -0.373741, 0.758561
+    ],
+    "symbols": ["O", "H", "H", "O", "H", "H"],
+    "molecular_charge":0
+  },
+  "driver": "energy",
+  "model": {
+    "method": "RHF",
+    "basis": "6-31G(2df,p)"
+  },
+  "keywords": {
+    "scf":{
+      "guess":"sad"
+    },
+    "prop":{
+      "mo energies":true,
+      "mulliken":true,
+      "multipole":"dipole"
+    }
+  }
+}

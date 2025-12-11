@@ -1,0 +1,11 @@
+[deps]
+BLISBLAS = "6f275bd8-fec0-4d39-945b-7e95a765fa1e"
+CxxWrap = "1f15a43c-97ca-5a2a-ae31-89f07a497df4"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+JuliaChem = "0a8e60a0-aa30-11e9-2bf2-3fef263b0d75"
+MKL = "33e6dc65-8f57-5167-99aa-e5a354878fb2"
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+MPIPreferences = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
+ThreadPinning = "811555cd-349b-4f26-b7bc-1f208b848042"

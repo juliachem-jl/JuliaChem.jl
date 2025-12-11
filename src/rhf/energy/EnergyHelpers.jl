@@ -1,40 +1,6 @@
 using Base.Threads
 
-#=
-"""
-	 index(a::Int64,b::Int64)
-Summary
-======
-Triangular indexing determination.
 
-Arguments
-======
-a = row index
-
-b = column index
-"""
-=#
-@inline function triangular_index(a::Int,b::Int)
-  return (muladd(a,a,-a) >> 1) + b
-end
-
-@inline function triangular_index(a::Int)
-  return muladd(a,a,-a) >> 1
-end
-
-@inline function decompose(input::Int)
-  #return ceil(Int,(-1.0+√(1+8*input))/2.0)
-  return Base.fptosi(
-    Int, 
-    Base.ceil_llvm(
-      0.5*( 
-        Base.Math.sqrt_llvm(
-          Base.sitofp(Float64, muladd(8,input,1))
-        ) - 1.0
-      )
-    )
-  )
-end
 
 function compute_enuc(mol::Molecule)
   E_nuc = 0.0
@@ -81,7 +47,7 @@ function compute_overlap(S::Matrix{Float64}, basis::Basis,
       idx += 1 
     end
   end
- 
+
   for iorb in 1:basis.norb, jorb in 1:iorb
     if iorb != jorb
       S[min(iorb,jorb),max(iorb,jorb)] = S[max(iorb,jorb),min(iorb,jorb)]
@@ -173,25 +139,59 @@ function compute_nah(V::Matrix{Float64}, mol::Molecule,
   end
 end
 
+# https://github.com/psi4/psi4numpy/blob/master/Tutorials/03_Hartree-Fock/3a_restricted-hartree-fock.ipynb
+# Hcore guess density matrix
+### function docs 
+"""
+    calculate_hcore_guess_density(D::Matrix{Float64},
+  S::Matrix{Float64}, A::Matrix{Float64}, H ::Matrix{Float64}, C ::Matrix{Float64}, nocc::Int64)
+
+  Calculates the guess density for the core hamiltonian guess.
+
+  # Arguments
+  - `D::Matrix{Float64}`: Density matrix to be filled.
+  - `S::Matrix{Float64}`: Overlap matrix. (S^-1/2)
+  - `A::Matrix{Float64}`: Orthogonalization matrix.
+  - `H::Matrix{Float64}`: One-electron Hamiltonian matrix.
+  - `C::Matrix{Float64}`: Orbital coefficient matrix.
+  - `F_eval::Vector{Float64}`: Fock matrix eigenvalues buffer
+  - `F_evec::Matrix{Float64}`: Fock matrix eigenvectors buffer
+  - `nocc::Int64`: Number of occupied orbitals.
+
+"""
+function calculate_hcore_guess_density!(D::Matrix{Float64},
+  S::Matrix{Float64}, A::Matrix{Float64}, H ::Matrix{Float64}, C ::Matrix{Float64}, 
+  F_eval::Vector{Float64}, F_evec::Matrix{Float64},
+  nocc::Int64)
+    F_p = A*H*transpose(A) # Transformed Fock Matrix
+    F_eval[:], F_evec[:,:] = eigen!(LinearAlgebra.Hermitian(F_p))
+    C .= A*F_evec # back transform eigenvectors to A.O. Basis
+    C_occ = view(C, :,1:nocc) # get occupied orbital coefficients
+    LinearAlgebra.BLAS.gemm!('N', 'T', 2.0, C_occ, C_occ, 0.0, D) # build density matrix
+  end
+
 function sad_guess(mol::Molecule, basis::Basis)
   basis_symbol = basis.model
 
   sad_guess = zeros(Float64, (basis.norb, basis.norb))
-  h5open(joinpath(@__DIR__, "../../../records/sadgss.h5"),"r") do sadgss 
+  # h5open(joinpath(@__DIR__, "../../../records/sadgss.h5"),"r") do sadgss 
+  # h5open("/global/cfs/cdirs/m4265/mixed_precision/JuliaChem.jl/records/cc-pvdz_sad_guess_test_pyscf.h5","r") do sadgss 
+  h5open("/global/cfs/cdirs/m4265/mixed_precision/JuliaChem.jl/records/6-31g_sad_guess_test.h5","r") do sadgss 
     anchor = 1
     for atom in mol
       atom_symbol = atom.symbol
      
-      sadgss_buf = read(sadgss["$atom_symbol/$basis_symbol"])
+      sadgss_buf = read(sadgss["$atom_symbol"])
       #println("$anchor, $atom")
       #display(sadgss_buf); println()
 
       sqrt_nbas_guess = trunc(Int,sqrt(length(sadgss_buf)))
-
+      # sqrt_nbas_guess = size(sadgss_buf,1)
       sadgss_idx = 1
       for i in anchor:(anchor+sqrt_nbas_guess-1) 
         for j in anchor:(anchor+sqrt_nbas_guess-1)
           sad_guess[i,j] = sadgss_buf[sadgss_idx]
+          # sad_guess[i,j] = sadgss_buf[i,j]
           sadgss_idx += 1 
         end  
       end
@@ -199,7 +199,7 @@ function sad_guess(mol::Molecule, basis::Basis)
     end  
   end
  
-  #display(sad_guess) 
+  # display(sad_guess) 
   return sad_guess  
 end
 
@@ -208,7 +208,7 @@ function compute_schwarz_bounds(schwarz_bounds::Matrix{Float64},
 
   max_am = max_ang_mom(basis) 
   eri_quartet_batch = Vector{Float64}(undef,eri_quartet_batch_size(max_am))
-  jeri_schwarz_engine = JERI.TEIEngine(basis.basis_cxx, basis.shpdata_cxx)
+  jeri_schwarz_engine = JERI.RHFTEIEngine(basis.basis_cxx, basis.shpdata_cxx)
 
   for ash in 1:nsh, bsh in 1:ash
     #fill!(eri_quartet_batch, 0.0)
@@ -329,16 +329,16 @@ end
     for μsize::Int64 in 0:(nμ-1), νsize::Int64 in 0:(nν-1)
       μνλσ = nσ*nλ*νsize + nσ*nλ*nν*μsize
       
-      μnorm = axial_norm_fact[μsize+1,amμ]
-      νnorm = axial_norm_fact[νsize+1,amν]
+      μnorm = get_axial_normalization_factor(μsize+1,amμ)
+      νnorm = get_axial_normalization_factor(νsize+1,amν)
 
       μνnorm = μnorm*νnorm
 
       for λsize::Int64 in 0:(nλ-1), σsize::Int64 in 0:(nσ-1)
         μνλσ += 1 
    
-        λnorm = axial_norm_fact[λsize+1,amλ]
-        σnorm = axial_norm_fact[σsize+1,amσ]
+        λnorm = get_axial_normalization_factor(λsize+1,amλ)
+        σnorm = get_axial_normalization_factor(σsize+1,amσ)
     
         λσnorm = λnorm*σnorm 
       
@@ -347,6 +347,103 @@ end
     end 
   end
 end
+
+
+
+#axial normialization for 3-center integrals screened
+@inline function axial_normalization_factor_screened!(eris::Array{Float64},
+  μsh::JCModules.Shell, νsh::JCModules.Shell, λsh::JCModules.Shell,
+  nμ::Int, nν::Int, nλ::Int,
+  μ::Int,ν::Int,λ::Int, sparse_pq_index_map, rank_basis_index_map) 
+
+  amμ = μsh.am  # auxiliary basis index
+  amν = νsh.am
+  amλ = λsh.am  
+  
+  for μsize::Int64 in 0:(nμ-1) 
+    μnorm = get_axial_normalization_factor(μsize+1,amμ)
+    for νsize::Int64 in 0:(nν-1)
+      νnorm = get_axial_normalization_factor(νsize+1,amν)
+      μνnorm = μnorm*νnorm
+      for λsize::Int64 in 0:(nλ-1) 
+        
+        screened_index = sparse_pq_index_map[ν+νsize,λ+λsize] 
+        if screened_index == 0 || ν+νsize < λ+λsize
+          continue
+        end
+        
+        λnorm = get_axial_normalization_factor(λsize+1,amλ)
+        normalization_factor = μνnorm*λnorm        
+        if amμ < 3 && amν < 3 && amλ < 3 
+          normalization_factor = 1.0
+        end
+        aux_index =  rank_basis_index_map[μ+μsize]
+        eris[aux_index,screened_index] *= normalization_factor 
+        if ν+νsize != λ+λsize
+          inverted_screened_index = sparse_pq_index_map[λ+λsize, ν+νsize] 
+          eris[aux_index,inverted_screened_index] = eris[aux_index,screened_index] 
+        end 
+      end 
+    end
+  end 
+end
+
+#axial normialization for 3-center integrals
+#Q = auxiliary basis index
+#p = primary basis index
+#q = primary basis index
+@inline function axial_normalization_factor(eris::Array{Float64},
+  Qsh::JCModules.Shell, psh::JCModules.Shell, qsh::JCModules.Shell,
+  nQ::Int, np::Int, nq::Int,
+  Q::Int,p::Int,q::Int) 
+
+  amQ = Qsh.am
+  amp = psh.am
+  amq = qsh.am
+
+  
+  
+  for Qsize::Int64 in 0:(nQ-1) 
+    Qnorm = get_axial_normalization_factor(Qsize+1,amQ)
+    for psize::Int64 in 0:(np-1)
+      pnorm = get_axial_normalization_factor(psize+1,amp)
+      Qpnorm = Qnorm*pnorm
+      for qsize::Int64 in 0:(nq-1)
+        qnorm = get_axial_normalization_factor(qsize+1,amq)
+        normalization_factor = Qpnorm*qnorm        
+        if amQ < 3 && amp < 3 && amq < 3 
+          normalization_factor = 1.0
+        end
+        eris[Q+Qsize, p+psize,q+qsize] *= normalization_factor
+        if p+psize > q+qsize
+          eris[Q+Qsize,q+qsize,p+psize] = eris[Q+Qsize, p+psize,q+qsize]
+        end
+      end 
+    end
+  end 
+end
+
+@inline function axial_normalization_factor(eri_quartet_batch::Array{Float64},
+  μsh::JCModules.Shell, νsh::JCModules.Shell,
+  nμ::Int, nν::Int,
+  μ::Int,ν::Int) 
+
+  amμ = μsh.am
+  amν = νsh.am
+  
+  if amμ < 3 && amν < 3
+    return
+  end
+  for μsize::Int64 in 0:(nμ-1) 
+    for νsize::Int64 in 0:(nν-1)
+      μnorm = get_axial_normalization_factor(μsize+1,amμ)
+      νnorm = get_axial_normalization_factor(νsize+1,amν)
+      μνnorm = μnorm*νnorm       
+      eri_quartet_batch[μ+μsize,ν+νsize] *= μνnorm      
+    end
+  end 
+end
+
 
 function eri_quartet_batch_size(max_am)
   return am_to_nbas_cart(max_am)^4

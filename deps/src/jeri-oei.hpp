@@ -59,7 +59,7 @@ public:
     julia_int bsh, julia_int absize)
   {
     m_overlap_eng.compute((*m_basis_set)[ash-1], (*m_basis_set)[bsh-1]);
-    for (int i = 0; i != absize; ++i) {
+    for (int i = 0; i != absize; ++i) {      
       S_block[i] = m_overlap_eng.results()[0][i];
     }
   }

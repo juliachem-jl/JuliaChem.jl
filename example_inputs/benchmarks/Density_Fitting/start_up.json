@@ -1,0 +1,36 @@
+{
+  "molecule": {
+    "geometry": [
+      0.00000,       -0.07579,        0.00000,
+      0.86681,        0.60144,        0.00000,
+     -0.86681,        0.60144,        0.00000
+    ],
+    "symbols": [ "O", "H", "H"],
+    "molecular_charge":0
+  },
+  "driver": "energy",
+  "model": {   
+    "method": "RHF",
+    "basis": "6-31G",
+    "auxiliary_basis": "cc-pVTZ-JKFIT"
+  },
+  "keywords": {
+    "scf":{
+      "scf_type":"df",
+      "guess":"hcore", 
+      "load":"dynamic",
+      "contraction_mode":"default",
+      "dele":1E-1,
+      "rmsd":1E-1,
+      "df_dele":1E-1,
+      "df_rmsd":1E-1,
+      "niter":20,
+      "df_niter":20
+    },
+    "prop":{
+      "mo energies":true,
+      "mulliken":true,
+      "multipole":"dipole"
+    }
+  }
+}

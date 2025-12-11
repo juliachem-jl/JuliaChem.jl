@@ -22,7 +22,7 @@ close(S22_GAMESS_file)
 S22_GAMESS = JSON.parse(S22_GAMESS_string)
 
 #== run S22 calculations ==#
-molecules = collect(2:3) 
+molecules = collect(1:22) 
 
 s22_test_results = Dict([]) 
 for imol in molecules 

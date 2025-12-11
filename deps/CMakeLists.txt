@@ -29,9 +29,9 @@ enable_language(CXX)
 #)
 
 if (CMAKE_BUILD_TYPE MATCHES Release)
-  set(CMAKE_CXX_FLAGS "-std=c++1z -O3 -ffast-math")
+  set(CMAKE_CXX_FLAGS "-std=c++20 -O3 -ffast-math")
 else()
-  set(CMAKE_CXX_FLAGS "-std=c++1z -O0 -g")
+  set(CMAKE_CXX_FLAGS "-std=c++20 -O0 -g")
 endif() 
 
 #################################
@@ -52,6 +52,9 @@ LINK_DIRECTORIES( SYSTEM
 )
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
+# Set up proper library paths
+set(CMAKE_INSTALL_RPATH "${JLCXX_PATH}/lib;${LIBINT_PATH}/lib")
+
 message("-- Found Eigen at ${EIGEN_PATH}")
 message("-- Found Boost at ${BOOST_PATH}")
 message("-- Found JLCxx at ${JLCXX_PATH}")
@@ -60,9 +63,18 @@ message("-- Found julia include directory at ${JULIA_INCLUDE_PATH}")
 #message("-- Found libint2.h at ${LIBINT_INCLUDE_PATH}")
 #message("-- Found libint2 library at ${LIBINT_LIB_PATH}")
 
+# Find JLCxx
+# find_package(JlCxx REQUIRED)
+# get_target_property(JlCxx_location JlCxx::cxxwrap_julia LOCATION)
+# get_filename_component(JlCxx_location ${JlCxx_location} DIRECTORY)
+# set(CMAKE_INSTALL_RPATH "$(CMAKE_INSTALL_PREFIX)/lib;$(JLCxx_location)")
+# message(STATUS "Found JlCxx at ${JlCxx_location}")
+
+
 #################################
 #   build and install library   # 
 #################################
+
 add_library(jeri SHARED src/jeri.cpp)
 target_link_libraries(jeri PUBLIC -lcxxwrap_julia -llibint2)
 

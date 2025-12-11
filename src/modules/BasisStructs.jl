@@ -34,7 +34,7 @@ end
 export am_to_nbas_cart 
 
 @inline function create_static_vector_small(
-  input::Vector{T}) where {T<:Number}
+  input::Array{T}) where {T<:Number}
   
   output_dynamic::Vector{T} = Vector{T}(undef,MAX_CONTRACTION)
   @views output_dynamic[1:size(input)[1]] = input[:]
@@ -42,7 +42,7 @@ export am_to_nbas_cart
 end
 
 @inline function create_static_vector_large(
-  input::Vector{T}) where {T<:Number}
+  input::Array{T}) where {T<:Number}
   
   output_dynamic::Vector{T} = Vector{T}(undef,2*MAX_CONTRACTION)
   @views output_dynamic[1:size(input)[1]] = input[:]
@@ -50,7 +50,7 @@ end
 end
 
 @inline function calculate_coefficients(
-  coef::Vector{T}, exp::Vector{T}, am::Int64, nprim::Int64, nbas::Int64, 
+  coef::Array{T}, exp::Vector{T}, am::Int64, nprim::Int64, nbas::Int64, 
   unnormalize::Bool) where {T<:Number}
 
   #== unnormalize basis functions ==#
@@ -178,6 +178,14 @@ struct Basis
 end
 export Basis
 
+
+struct CalculationBasisSets
+  primary::Basis
+  auxillary::Union{Basis,Nothing}
+end
+export CalculationBasisSets
+
+
 function max_ang_mom(basis_set::Basis)
   max_am = 0
   for shell in basis_set.shells
@@ -185,7 +193,17 @@ function max_ang_mom(basis_set::Basis)
   end
   return max_am
 end
-export max_ang_mom
+
+
+function max_number_of_basis_functions(basis_set::Basis)
+  max_nbas = 0
+  for shell in basis_set.shells
+    max_nbas = shell.nbas > max_nbas ? shell.nbas : max_nbas
+  end
+  return max_nbas
+end
+
+export max_ang_mom, max_number_of_basis_functions
 
 function Base.getindex(basis_set::Basis, index)
   return basis_set.shells[index]

@@ -1,0 +1,41 @@
+{
+  "molecule": {
+    "geometry": [
+      -1.888896, -0.179692, 0.000000,
+      -1.493280, 1.073689, 0.000000,
+      -1.170435, -1.166590, 0.000000,
+      -2.979488, -0.258829, 0.000000,
+      -0.498833, 1.107195, 0.000000,
+      1.888896, 0.179692, 0.000000,
+      1.493280, -1.073689, 0.000000,
+      1.170435, 1.166590, 0.000000,
+      2.979488, 0.258829, 0.000000,
+      0.498833, -1.107195, 0.000000
+    ],
+    "symbols": ["C", "O", "O", "H", "H", "C", "O", "O", "H", "H"],
+    "molecular_charge":0
+  },
+  "driver": "energy",
+  "model": {
+    "method": "RHF",
+    "basis": "cc-pVDZ",
+    "auxiliary_basis": "cc-pVDZ-JKFIT"
+  },
+  "keywords": {
+    "scf":{
+      "scf_type":"df",
+      "guess":"hcore",
+      "contraction_mode":"screened",
+      "load": "static",
+      "dele":1E-6,
+      "rmsd":1E-6,
+      "df_dele":1E-6,
+      "df_rmsd":1E-6
+    },
+    "prop":{
+      "mo energies":true,
+      "mulliken":true,
+      "multipole":"dipole"
+    }
+  }
+}

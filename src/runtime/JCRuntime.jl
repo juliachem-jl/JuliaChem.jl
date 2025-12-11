@@ -1,5 +1,6 @@
 using MPI
 using JuliaChem.JERI
+using CUDA 
 
 #== initialize JuliaChem runtime ==#
 function initialize()
@@ -22,6 +23,7 @@ function finalize()
   if(!MPI.Finalized())
     MPI.Finalize()
     JERI.finalize()
+   
   else
     println("JuliaChem has already been finalized!")
   end

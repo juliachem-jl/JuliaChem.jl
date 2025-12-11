@@ -1,0 +1,12 @@
+deps/build/*
+deps/build.log
+deps/libjeri.so
+.vscode/launch.json
+.vscode/settings.json
+.templates/.editorconfig
+.templates/$$var_template/$$var_filename.js
+.templates/template-sample/index.js
+.templates/template-sample-react-component/index.jsx
+.templates/template-sample-react-component/index.scss
+template.config.js
+testoutputs/*

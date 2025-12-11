@@ -8,7 +8,6 @@ function print_xyz(mol::Molecule)
   #== determine some pre-information ==#
   natoms = length(mol)
   comm = MPI.COMM_WORLD
-  comm = MPI.COMM_WORLD
 
   #== print coordinates in xyz format ==#
   if (MPI.Comm_rank(comm) == 0)
@@ -17,9 +16,10 @@ function print_xyz(mol::Molecule)
     println("            in xyz format...                      ")
     println("----------------------------------------          ")
     println(" ")
+    println(natoms) 
+    println() 
   end
-  println(natoms) 
-  println() 
+
 
   for iatom in mol
     #fac = 0.52917724924 #switch from bohr to ang

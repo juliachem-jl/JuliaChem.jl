@@ -1,0 +1,1 @@
+JULIA_NUM_THREADS=20 julia --color=yes --math-mode=fast --check-bounds=no --optimize=3 --project=/home/jackson/.julia/environments/v1.6 /home/jackson/source/JuliaChem.jl/test/density-fitting-test.jl

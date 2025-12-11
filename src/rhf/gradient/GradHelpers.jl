@@ -294,7 +294,7 @@ function compute_schwarz_bounds(schwarz_bounds::Matrix{Float64},
 
   max_am = max_ang_mom(basis) 
   eri_quartet_batch = Vector{Float64}(undef,eri_quartet_batch_size(max_am))
-  jeri_schwarz_engine = JERI.TEIEngine(basis.basis_cxx, basis.shpdata_cxx)
+  jeri_schwarz_engine = JERI.RHFTEIEngine(basis.basis_cxx, basis.shpdata_cxx)
 
   for ash in 1:nsh, bsh in 1:ash
     fill!(eri_quartet_batch, 0.0)
