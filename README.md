@@ -1,5 +1,12 @@
 [![Build Status](https://travis-ci.com/davpoolechem/JuliaChem.jl.svg?branch=development)](https://travis-ci.com/davpoolechem/JuliaChem.jl) [![codecov](https://codecov.io/gh/davpoolechem/JuliaChem.jl/branch/development/graph/badge.svg)](https://codecov.io/gh/davpoolechem/JuliaChem.jl)
 
+##NOTE
+The move to this being the main JuliaChem repository is in progress: 
+Original Implementation: https://github.com/davpoolechem/JuliaChem.jl.git
+DF-RHF additions: github.com/j-hayes/JuliaChem.jl
+
+Will be merged into this repository soon. 
+
 # Welcome to JuliaChem.jl!
 JuliaChem.jl is an electronic structure theory program written in Julia, designed to combine
 Julia's dynamic and interactive nature with its high-performance capabilities to offer users the best of both worlds for quantum chemistry computations.
