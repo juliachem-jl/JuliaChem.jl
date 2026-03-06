@@ -11,7 +11,7 @@ mutable struct ScreeningData
     exchange_batch_indexes::Array{Tuple{Int,Int}}
     non_zero_ranges::Array{Array{UnitRange{Int}}}
     non_zero_sparse_ranges::Array{Array{UnitRange{Int}}}
-    triangular_indices_count::Int
+    sparse_index_to_pq::Dict{Int64, Tuple{Int64, Int64}}
     screened_indices_count::Int
     K_block_width::Int
 end
@@ -42,7 +42,7 @@ end
 
 function SCFData(gpu_data::SCFGPUData)
     sd = ScreeningData([], [], [], [], [], [], [], falses(1, 1), zeros(Int, 0), Array{Tuple{Int,Int}}(undef, 0),
-        Array{Array{UnitRange{Int}}}(undef, 0), Array{Array{UnitRange{Int}}}(undef, 0), 0, 0, 0)
+        Array{Array{UnitRange{Int}}}(undef, 0), Array{Array{UnitRange{Int}}}(undef, 0), Dict{Int64, Tuple{Int64, Int64}}(), 0, 0)
     return SCFData([], [], [], [], [],[], [], [],[], [], [], [], [], sd, gpu_data, 0, 0, 0, 0, 0)
 end
 

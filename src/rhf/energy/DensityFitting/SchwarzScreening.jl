@@ -70,16 +70,18 @@ function schwarz_screen_itegrals_df(scf_data, σ, max_P_P, basis_sets, jeri_engi
         end # end of thread spawn
     end # end of thread sync 
     sparse_pq_index_map = zeros(Int64, scf_data.μ, scf_data.μ)
+    sparse_index_to_pq = Dict{Int64, Tuple{Int64, Int64}}()
     sparse_index = 1
     for pp::Int64 in 1:scf_data.μ
         for qq::Int64 in 1:scf_data.μ
             if basis_function_screen_matrix[qq,pp] == true
                 sparse_pq_index_map[qq,pp] = sparse_index
+                sparse_index_to_pq[sparse_index] = (qq, pp)
                 sparse_index += 1                
             end
         end
     end
-    return shell_screen_matrix, basis_function_screen_matrix, sparse_pq_index_map
+    return shell_screen_matrix, basis_function_screen_matrix, sparse_pq_index_map, sparse_index_to_pq
 end
 
 
