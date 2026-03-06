@@ -3,7 +3,6 @@ using LinearAlgebra
 using JuliaChem.Shared.Constants.SCF_Keywords
 using JuliaChem.Shared
 using Serialization
-using ThreadPinning 
 using Serialization
 using JuliaChem.Shared.JCTC
 using JuliaChem.Shared.Constants
@@ -18,7 +17,9 @@ function get_screening_metadata!(scf_data, sigma, jeri_engine_thread, two_center
         max_P_P = get_max_P_P(two_center_integrals)
         scf_data.screening_data.shell_screen_matrix,
         scf_data.screening_data.basis_function_screen_matrix,
-        scf_data.screening_data.sparse_pq_index_map = schwarz_screen_itegrals_df(scf_data, sigma, max_P_P, basis_sets, jeri_engine_thread)
+        scf_data.screening_data.sparse_pq_index_map,
+        scf_data.screening_data.sparse_index_to_pq = schwarz_screen_itegrals_df(
+            scf_data, sigma, max_P_P, basis_sets, jeri_engine_thread)
     end 
 
     screning_metadata_time = @elapsed begin 
@@ -76,6 +77,23 @@ function get_screening_metadata!(scf_data, sigma, jeri_engine_thread, two_center
 
 end
 
+function calculate_B_screened!(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+    n_ranks = MPI.Comm_size(MPI.COMM_WORLD)
+    rank = MPI.Comm_rank(MPI.COMM_WORLD)
+    if n_ranks > 1 
+        calculate_B_multi_rank(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+    else
+        three_eri_time = @elapsed scf_data.D = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
+            scf_data, rank, n_ranks, true, false)
+        blas_threads = BLAS.get_num_threads()
+        BLAS.set_num_threads(Threads.nthreads())
+        B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, J_AB_invt, scf_data.D)    
+        BLAS.set_num_threads(blas_threads)
+        jc_timing.timings[JCTC.B_time] = B_time
+        jc_timing.timings[JCTC.three_eri_time] = three_eri_time
+    end
+    
+end
 
 function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T}, jeri_engine_thread::Vector{T2},
     basis_sets::CalculationBasisSets,
@@ -98,18 +116,8 @@ function df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df::Vector{T},
             end
             J_AB_invt = two_center_integrals
         end
-        B_time = 0.0
-        three_eri_time = 0.0
-        if n_ranks > 1 
 
-            calculate_B_multi_rank(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
-        else
-            three_eri_time = @elapsed scf_data.D = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options,
-                scf_data, rank, n_ranks, true, false)
-            B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, J_AB_invt, scf_data.D)    
-            jc_timing.timings[JCTC.B_time] = B_time
-            jc_timing.timings[JCTC.three_eri_time] = three_eri_time
-        end
+        calculate_B_screened!(scf_data, J_AB_invt, basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
         # deallocate unneeded memory
         two_center_integrals = zeros(0)
         J_AB_invt = zeros(0)

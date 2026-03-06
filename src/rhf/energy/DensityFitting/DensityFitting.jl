@@ -4,7 +4,6 @@ using JuliaChem.Shared.Constants.SCF_Keywords
 using JuliaChem.Shared
 using Serialization
 using HDF5
-using ThreadPinning
 
 
 
@@ -53,7 +52,7 @@ function df_rhf_fock_build!(scf_data, jeri_engine_thread_df::Vector{T}, jeri_eng
   else # CPU
     if scf_options.contraction_mode == "dense" || scf_options.df_force_dense 
       df_rhf_fock_build_BLAS!(scf_data, jeri_engine_thread_df,
-      basis_sets, occupied_orbital_coefficients, iteration, scf_options, jc_timing) 
+      basis_sets, occupied_orbital_coefficients, iteration, scf_options, jc_timing, jeri_engine_thread) 
     else   #default contraction mode is now scf_options.contraction_mode == "screened"
       df_rhf_fock_build_screened!(scf_data, jeri_engine_thread_df, jeri_engine_thread,
       basis_sets, occupied_orbital_coefficients, iteration, scf_options, jc_timing) 
@@ -108,13 +107,13 @@ function allocate_memory_density_fitting_dense(scf_data, scf_options, indicies)
 end
 
 function df_rhf_fock_build_BLAS!(scf_data, jeri_engine_thread_df::Vector{T}, basis_sets::CalculationBasisSets,
-    occupied_orbital_coefficients, iteration, scf_options::SCFOptions, jc_timing::JCTiming) where {T<:DFRHFTEIEngine}
+    occupied_orbital_coefficients, iteration, scf_options::SCFOptions, jc_timing::JCTiming, jeri_engine_thread::Vector{TT}) where {T<:DFRHFTEIEngine , TT<:RHFTEIEngine}
   comm = MPI.COMM_WORLD
   shell_indicies, aux_indicies, indicies  = static_load_rank_indicies(MPI.Comm_rank(comm),MPI.Comm_size(comm),basis_sets) #todo only do this on iteration 1
   
   if iteration == 1
     two_eri_time = @elapsed two_center_integrals = calculate_two_center_intgrals(jeri_engine_thread_df, basis_sets, scf_options)
-    calculate_B!(scf_data, two_center_integrals, jc_timing, scf_options, jeri_engine_thread_df, basis_sets)
+    calculate_B!(scf_data, two_center_integrals, jc_timing, scf_options, jeri_engine_thread_df, jeri_engine_thread, basis_sets)
         
     jc_timing.timings[JCTiming_key(JCTC.two_eri_time,iteration)] = two_eri_time
     jc_timing.non_timing_data[JCTC.contraction_algorithm] = "dense cpu"
@@ -126,17 +125,34 @@ end
 
 function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
   scf_options::SCFOptions, jeri_engine_thread_df::Vector{T},
-  basis_sets::CalculationBasisSets) where {T<:DFRHFTEIEngine}
+  jeri_engine_thread::Vector{TT}, basis_sets::CalculationBasisSets) where {T<:DFRHFTEIEngine , TT<:RHFTEIEngine}
   μμ = scf_data.μ
   νν = scf_data.μ
 
   n_ranks = MPI.Comm_size(MPI.COMM_WORLD)
   rank = MPI.Comm_rank(MPI.COMM_WORLD)
-  
+
+    rank_shell_aux_indicies, 
+    rank_aux_indicies, 
+    rank_basis_index_map = static_load_rank_indicies(rank,n_ranks,basis_sets) 
+    AA = length(rank_aux_indicies)
+
+   use_screening = haskey(ENV, "DENSE_DF_USE_SCREENING") && parse(Bool, ENV["DENSE_DF_USE_SCREENING"])
+   if use_screening
+      if scf_options.df_screening_sigma == 0.0
+        scf_options.df_screening_sigma = 1E-6
+      end
+      get_screening_metadata!(scf_data, scf_options.df_screening_sigma, 
+            jeri_engine_thread, two_center_integrals, basis_sets, jc_timing)
+   end
+   
   form_J_AB_inv_time = @elapsed begin
     if rank == 0 # avoid convergence problems always do this on rank 0
+      blas_threads = BLAS.get_num_threads()
+      BLAS.set_num_threads(Threads.nthreads())
       LAPACK.potrf!('L', two_center_integrals)
       LAPACK.trtri!('L', 'N', two_center_integrals)
+      BLAS.set_num_threads(blas_threads)
     end
     if n_ranks > 1
         broadcast_two_center_integrals(two_center_integrals)
@@ -147,21 +163,30 @@ function calculate_B!(scf_data, two_center_integrals, jc_timing::JCTiming,
   three_eri_time = 0.0
   three_center_integrals = []
  
-  if n_ranks == 1  #single rank case
+  if use_screening
+    calculate_B_screened!(scf_data, J_AB_invt,
+     basis_sets, jeri_engine_thread_df, scf_options, jc_timing)
+     D_screened = scf_data.D
+     D = zeros(Float64, (AA, scf_data.μ, scf_data.μ))
+    decompress_three_eri_time = @elapsed begin 
+      Threads.@threads for pq_prime in 1:scf_data.screening_data.screened_indices_count
+            pp,qq = scf_data.screening_data.sparse_index_to_pq[pq_prime]
+            D[:, pp, qq] .= D_screened[:, pq_prime]
+      end
+    end
+    scf_data.D = D
+    jc_timing.timings["decompress_three_eri_time"] = decompress_three_eri_time
+  elseif n_ranks == 1  #single rank case
     AA = scf_data.A
     three_eri_time = @elapsed three_center_integrals = calculate_three_center_integrals(jeri_engine_thread_df, basis_sets, scf_options, 
     scf_data, rank,n_ranks, false, false)
-    
     scf_data.D = three_center_integrals
     B_time = @elapsed BLAS.trmm!('L', 'L', 'N', 'N', 1.0, two_center_integrals, reshape(scf_data.D, (AA, μμ * νν)))
   else
 
     setup_unscreened_screening_matricies(basis_sets, scf_data)
 
-    rank_shell_aux_indicies, 
-    rank_aux_indicies, 
-    rank_basis_index_map = static_load_rank_indicies(rank,n_ranks,basis_sets) 
-    AA = length(rank_aux_indicies)
+    
 
     scf_data.D = zeros(Float64, (AA, μμ * νν))
     form_J_AB_inv_time += @elapsed this_rank_two_eri = two_center_integrals[rank_aux_indicies,:]
@@ -200,14 +225,14 @@ function calculate_coulomb!(scf_data, occupied_orbital_coefficients, indicies, j
   blas_threads = BLAS.get_num_threads()
   BLAS.set_num_threads(1)
   density_time = @elapsed BLAS.gemm!('N', 'T', 1.0, occupied_orbital_coefficients, occupied_orbital_coefficients, 0.0, density)
-  BLAS.set_num_threads(BLAS_threads)
-
+  BLAS.set_num_threads(Threads.nthreads())
   V_time = @elapsed begin
     BLAS.gemv!('N', 1.0, reshape(B, (Q, pq)), reshape(density, pq), 0.0, V)
   end
   J_time = @elapsed begin
     BLAS.gemv!('T', 2.0, reshape(B, (Q, pq)), V, 0.0, reshape(fock, pq))
   end
+  BLAS.set_num_threads(blas_threads)
   jc_timing.timings[JCTiming_key(JCTC.density_time,iteration)] = density_time
   jc_timing.timings[JCTiming_key(JCTC.V_time,iteration)] = V_time
   jc_timing.timings[JCTiming_key(JCTC.J_time,iteration)] = J_time
@@ -222,13 +247,15 @@ function calculate_exchange!(scf_data, occupied_orbital_coefficients, indicies, 
   B = scf_data.D
   W = scf_data.D_tilde
   fock = scf_data.two_electron_fock
-
+  blas_threads = BLAS.get_num_threads()
+  BLAS.set_num_threads(Threads.nthreads())
   W_time = @elapsed begin
     BLAS.gemm!('T', 'T', 1.0, ooc, reshape(B, (Q * p, p)), 0.0, reshape(W, (n_ooc, Q * p)))
   end
   K_time = @elapsed begin
     BLAS.gemm!('T', 'N', -1.0, reshape(W, (n_ooc * Q, p)), reshape(W, (n_ooc * Q, p)), 1.0, fock)
   end
+  BLAS.set_num_threads(blas_threads)
   jc_timing.timings[JCTiming_key(JCTC.W_time,iteration)] = W_time
   jc_timing.timings[JCTiming_key(JCTC.K_time,iteration)] = K_time
 
