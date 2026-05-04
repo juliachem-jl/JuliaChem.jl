@@ -7,6 +7,8 @@ DF-RHF additions: github.com/j-hayes/JuliaChem.jl
 
 Will be merged into this repository soon. 
 
+Updated build instructions with run scripts and example inputs will be added soon. 
+
 # Welcome to JuliaChem.jl!
 JuliaChem.jl is an electronic structure theory program written in Julia, designed to combine
 Julia's dynamic and interactive nature with its high-performance capabilities to offer users the best of both worlds for quantum chemistry computations.
